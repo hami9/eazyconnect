@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyd
+*.pyo
+
+# Virtual Environments
+.venv/
+.venv*/
+venv/
+env/
+ENV/
+
+# PyInstaller / Distribution / Build
+build/
+dist/
+*.spec
+installer_build/
+client/installer_build/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Certificates and Keys (Never commit private keys!)
+server/certs/*.pem
+server/certs/*.key
+*.pem
+*.key
+
+# Runtime data & Local User Data
+server/data/
+server/users.json
+server/tokens.json
+client/config.json
+
+# Local logs & debug outputs
+*.log
+*debug*.txt
+*output*.txt
+*diag*.txt
+
+# IDE & OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
