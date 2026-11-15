@@ -12,6 +12,9 @@ pub use peripherals::{
     UsbDeviceSummary,
 };
 pub use system::{
-    collect_hardware_report, detect_network_adapters, hostname, is_process_elevated,
-    NetworkAdapterSummary, SystemHardwareReport,
+    best_lan_ipv4, best_lan_ipv4_from, classify_vpn_adapter, collect_hardware_report,
+    collect_lan_and_vpn_ipv4s, collect_lan_and_vpn_ipv4s_from, collect_lan_directed_broadcasts,
+    collect_lan_directed_broadcasts_from, collect_local_endpoint_ips, detect_network_adapters,
+    hostname, ipv4_directed_broadcast, is_process_elevated, NetworkAdapterSummary,
+    SystemHardwareReport,
 };

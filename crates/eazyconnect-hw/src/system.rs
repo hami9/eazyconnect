@@ -1,3 +1,5 @@
+use std::net::Ipv4Addr;
+
 use serde::{Deserialize, Serialize};
 
 use crate::keystore::{detect_os_machine_id, detect_tpm_cng};
@@ -14,6 +16,136 @@ pub struct NetworkAdapterSummary {
     pub is_up: bool,
     pub is_vpn_like: bool,
     pub ipv4_addrs: Vec<String>,
+    #[serde(default)]
+    pub ipv4_cidrs: Vec<String>,
+}
+
+const VPN_KEYWORDS: &[&str] = &[
+    "VPN",
+    "TAP",
+    "TUN",
+    "WINTUN",
+    "WIREGUARD",
+    "OPENVPN",
+    "WINDSCRIBE",
+    "CISCO",
+    "ANYCONNECT",
+    "TAILSCALE",
+    "ZEROTIER",
+    "CLOUDFLARE",
+    "WARP",
+    "MULLVAD",
+    "PROTON",
+    "FORTI",
+    "OUTLINE",
+    "NEKORAY",
+    "SING-BOX",
+    "GLOBALPROTECT",
+    "PULSE SECURE",
+    "SOFTETHER",
+    "HAMACHI",
+    "NORDLYNX",
+];
+
+/// Returns true if an adapter's friendly name or description matches known VPN/tunnel drivers.
+pub fn classify_vpn_adapter(name: &str, description: &str) -> bool {
+    let combined_upper = format!("{name} {description}").to_ascii_uppercase();
+    VPN_KEYWORDS.iter().any(|kw| combined_upper.contains(kw))
+}
+
+fn is_usable_endpoint_v4(ip: Ipv4Addr) -> bool {
+    !ip.is_loopback() && !ip.is_unspecified() && !ip.is_link_local() && !ip.is_multicast()
+}
+
+/// Parses `"a.b.c.d/prefix"` into `(interface_ipv4, directed_broadcast_ipv4)` for LAN subnets.
+pub fn ipv4_directed_broadcast(cidr: &str) -> Option<(Ipv4Addr, Ipv4Addr)> {
+    let (ip_str, prefix_str) = cidr.split_once('/')?;
+    let ip: Ipv4Addr = ip_str.parse().ok()?;
+    let prefix: u8 = prefix_str.parse().ok()?;
+    if !is_usable_endpoint_v4(ip) || prefix == 0 || prefix >= 31 {
+        return None;
+    }
+    let mask = (!0u32) << (32 - u32::from(prefix));
+    let bcast = Ipv4Addr::from(u32::from(ip) | !mask);
+    Some((ip, bcast))
+}
+
+/// Separates usable IPv4 addresses across up adapters into `(lan_ips, vpn_ips)`.
+pub fn collect_lan_and_vpn_ipv4s_from(
+    adapters: &[NetworkAdapterSummary],
+) -> (Vec<String>, Vec<String>) {
+    let mut lan = Vec::new();
+    let mut vpn = Vec::new();
+    for adapter in adapters.iter().filter(|a| a.is_up) {
+        let target = if adapter.is_vpn_like {
+            &mut vpn
+        } else {
+            &mut lan
+        };
+        for s in &adapter.ipv4_addrs {
+            if let Ok(ip) = s.parse::<Ipv4Addr>() {
+                if is_usable_endpoint_v4(ip) && !target.contains(s) {
+                    target.push(s.clone());
+                }
+            }
+        }
+    }
+    (lan, vpn)
+}
+
+/// Returns `(lan_ips, vpn_ips)` across all currently active OS network adapters.
+pub fn collect_lan_and_vpn_ipv4s() -> (Vec<String>, Vec<String>) {
+    let adapters = detect_network_adapters().unwrap_or_default();
+    collect_lan_and_vpn_ipv4s_from(&adapters)
+}
+
+/// Collects all usable IPv4 endpoint addresses (LAN adapters first, then active VPN adapters).
+pub fn collect_local_endpoint_ips() -> Vec<String> {
+    let (mut lan, vpn) = collect_lan_and_vpn_ipv4s();
+    for ip in vpn {
+        if !lan.contains(&ip) {
+            lan.push(ip);
+        }
+    }
+    lan
+}
+
+/// Computes `(local_ip, subnet_broadcast_ip)` pairs for active non-VPN LAN interfaces.
+pub fn collect_lan_directed_broadcasts_from(
+    adapters: &[NetworkAdapterSummary],
+) -> Vec<(Ipv4Addr, Ipv4Addr)> {
+    let mut out = Vec::new();
+    for adapter in adapters.iter().filter(|a| a.is_up && !a.is_vpn_like) {
+        for cidr in &adapter.ipv4_cidrs {
+            if let Some(pair) = ipv4_directed_broadcast(cidr) {
+                if !out.contains(&pair) {
+                    out.push(pair);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Computes `(local_ip, subnet_broadcast_ip)` pairs for all up OS LAN interfaces.
+pub fn collect_lan_directed_broadcasts() -> Vec<(Ipv4Addr, Ipv4Addr)> {
+    let adapters = detect_network_adapters().unwrap_or_default();
+    collect_lan_directed_broadcasts_from(&adapters)
+}
+
+/// Picks the preferred non-VPN LAN IPv4 address from a list of adapters (RFC1918 preferred).
+pub fn best_lan_ipv4_from(adapters: &[NetworkAdapterSummary]) -> Option<String> {
+    let (lan, _) = collect_lan_and_vpn_ipv4s_from(adapters);
+    lan.iter()
+        .find(|s| s.parse::<Ipv4Addr>().is_ok_and(|ip| ip.is_private()))
+        .cloned()
+        .or_else(|| lan.into_iter().next())
+}
+
+/// Picks the preferred non-VPN LAN IPv4 address on the current host, if any.
+pub fn best_lan_ipv4() -> Option<String> {
+    let adapters = detect_network_adapters().unwrap_or_default();
+    best_lan_ipv4_from(&adapters)
 }
 
 /// Complete native hardware + OS security inventory for diagnostics and attestation.
@@ -94,12 +226,10 @@ pub fn detect_network_adapters() -> Result<Vec<NetworkAdapterSummary>, String> {
             let desc = unsafe { wide_ptr_to_string(node.Description) };
             let is_up = node.OperStatus == IfOperStatusUp;
 
-            let combined_upper = format!("{name} {desc}").to_ascii_uppercase();
-            let is_vpn_like = ["VPN", "TAP", "TUN", "WIREGUARD", "OPENVPN", "WINDSCRIBE", "CISCO"]
-                .iter()
-                .any(|kw| combined_upper.contains(kw));
+            let is_vpn_like = classify_vpn_adapter(&name, &desc);
 
             let mut ipv4_addrs = Vec::new();
+            let mut ipv4_cidrs = Vec::new();
             let mut uni = node.FirstUnicastAddress;
             while !uni.is_null() {
                 // SAFETY: Unicast address linked list node inside `buf`.
@@ -113,7 +243,11 @@ pub fn detect_network_adapters() -> Result<Vec<NetworkAdapterSummary>, String> {
                         let sin = unsafe { &*(sa as *const SOCKADDR_IN) };
                         // SAFETY: S_addr holds IPv4 bytes in network byte order.
                         let addr_u32 = u32::from_be(unsafe { sin.sin_addr.S_un.S_addr });
-                        ipv4_addrs.push(Ipv4Addr::from(addr_u32).to_string());
+                        let ip = Ipv4Addr::from(addr_u32);
+                        ipv4_addrs.push(ip.to_string());
+                        if ua.OnLinkPrefixLength <= 32 {
+                            ipv4_cidrs.push(format!("{ip}/{}", ua.OnLinkPrefixLength));
+                        }
                     }
                 }
                 uni = ua.Next;
@@ -125,6 +259,7 @@ pub fn detect_network_adapters() -> Result<Vec<NetworkAdapterSummary>, String> {
                 is_up,
                 is_vpn_like,
                 ipv4_addrs,
+                ipv4_cidrs,
             });
             curr = node.Next;
         }
@@ -190,5 +325,68 @@ mod tests {
             assert!(rep.machine_id_present);
             assert!(!rep.network_adapters.is_empty());
         }
+    }
+
+    #[test]
+    fn test_classify_vpn_adapter_covers_modern_tunnels() {
+        assert!(classify_vpn_adapter("Tailscale", "Tailscale Tunnel"));
+        assert!(classify_vpn_adapter("ZeroTier One", "ZeroTier Virtual Port"));
+        assert!(classify_vpn_adapter("CloudflareWARP", "Wintun Userspace Tunnel"));
+        assert!(classify_vpn_adapter("wg0", "WireGuard Tunnel"));
+        assert!(classify_vpn_adapter("ProtonVPN", "TAP-Windows Adapter V9"));
+        assert!(classify_vpn_adapter("nekoray-tun", "sing-box tun"));
+        assert!(!classify_vpn_adapter("Wi-Fi", "Intel(R) Wi-Fi 6E AX211"));
+        assert!(!classify_vpn_adapter("Ethernet", "Realtek PCIe GbE Family Controller"));
+    }
+
+    #[test]
+    fn test_directed_broadcast_and_lan_selection() {
+        assert_eq!(
+            ipv4_directed_broadcast("192.168.1.42/24"),
+            Some((Ipv4Addr::new(192, 168, 1, 42), Ipv4Addr::new(192, 168, 1, 255)))
+        );
+        assert_eq!(
+            ipv4_directed_broadcast("10.20.30.4/16"),
+            Some((Ipv4Addr::new(10, 20, 30, 4), Ipv4Addr::new(10, 20, 255, 255)))
+        );
+        assert_eq!(ipv4_directed_broadcast("127.0.0.1/8"), None);
+        assert_eq!(ipv4_directed_broadcast("169.254.1.5/16"), None);
+        assert_eq!(ipv4_directed_broadcast("10.0.0.1/32"), None);
+
+        let adapters = vec![
+            NetworkAdapterSummary {
+                name: "WireGuard".to_string(),
+                description: "WireGuard Tunnel".to_string(),
+                is_up: true,
+                is_vpn_like: true,
+                ipv4_addrs: vec!["10.8.0.2".to_string()],
+                ipv4_cidrs: vec!["10.8.0.2/24".to_string()],
+            },
+            NetworkAdapterSummary {
+                name: "Wi-Fi".to_string(),
+                description: "Intel Wi-Fi".to_string(),
+                is_up: true,
+                is_vpn_like: false,
+                ipv4_addrs: vec!["192.168.50.15".to_string()],
+                ipv4_cidrs: vec!["192.168.50.15/24".to_string()],
+            },
+            NetworkAdapterSummary {
+                name: "Ethernet".to_string(),
+                description: "Down NIC".to_string(),
+                is_up: false,
+                is_vpn_like: false,
+                ipv4_addrs: vec!["192.168.99.2".to_string()],
+                ipv4_cidrs: vec!["192.168.99.2/24".to_string()],
+            },
+        ];
+        assert_eq!(best_lan_ipv4_from(&adapters), Some("192.168.50.15".to_string()));
+        assert_eq!(
+            collect_lan_and_vpn_ipv4s_from(&adapters),
+            (vec!["192.168.50.15".to_string()], vec!["10.8.0.2".to_string()])
+        );
+        assert_eq!(
+            collect_lan_directed_broadcasts_from(&adapters),
+            vec![(Ipv4Addr::new(192, 168, 50, 15), Ipv4Addr::new(192, 168, 50, 255))]
+        );
     }
 }
