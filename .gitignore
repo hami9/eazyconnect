@@ -1,18 +1,47 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.pyd
-*.pyo
+# Rust / Cargo
+/target/
+**/target/
+**/*.rs.bk
+*.pdb
+*.d
 
-# Virtual Environments
-.venv/
-.venv*/
-venv/
-env/
-ENV/
+# Cryptographic keys, certificates & hardware keystores (NEVER commit)
+certs/
+**/certs/
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.der
+*.csr
+*.jwk
+*keystore*
+*identity*.json
+*.sealed
+*.secret
+.env
+.env.*
 
-# PyInstaller / Distribution / Build
+# Runtime state, databases & local configs
+data/
+**/data/
+_reports/
+*_reports/
+users.json
+tokens.json
+config.json
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+
+# Local machine / LAN test files (contain hostnames, local IPs, deploy wrappers)
+README-TEST.txt
+Install-CLIENT.bat
+Install-MASTER.bat
+
+# Build, installers & archives
 build/
 dist/
 *.spec
@@ -22,18 +51,22 @@ client/installer_build/
 *.dll
 *.so
 *.dylib
+*.msi
+*.zip
+*.7z
+*.tar.gz
 
-# Certificates and Keys (Never commit private keys!)
-server/certs/*.pem
-server/certs/*.key
-*.pem
-*.key
-
-# Runtime data & Local User Data
-server/data/
-server/users.json
-server/tokens.json
-client/config.json
+# Python / legacy environments
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyd
+*.pyo
+.venv/
+.venv*/
+venv/
+env/
+ENV/
 
 # Local logs & debug outputs
 *.log
