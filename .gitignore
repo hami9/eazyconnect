@@ -16,8 +16,14 @@ certs/
 *.der
 *.csr
 *.jwk
-*keystore*
+keystore/
+**/keystore/
+*.keystore
+*keystore*.json
+*keystore*.bin
+*keystore*.dat
 *identity*.json
+*.eazyconnect-id.json
 *.sealed
 *.secret
 .env
@@ -29,8 +35,11 @@ data/
 _reports/
 *_reports/
 users.json
+devices.json
 tokens.json
 config.json
+sync-manifest.json
+bootstrap-admin.txt
 *.db
 *.db-*
 *.sqlite
