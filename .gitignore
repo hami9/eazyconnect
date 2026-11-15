@@ -8,6 +8,8 @@
 # Cryptographic keys, certificates & hardware keystores (NEVER commit)
 certs/
 **/certs/
+tls/
+**/tls/
 *.pem
 *.key
 *.p12

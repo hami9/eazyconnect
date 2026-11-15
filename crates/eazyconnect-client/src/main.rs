@@ -175,6 +175,9 @@ async fn cmd_discover(args: &[String]) -> Result<(), String> {
                 m.tls_cert_sha256_hex.as_deref().unwrap_or("<none>"),
                 m.master_ed25519_pub_hex
             );
+            if !m.alternate_urls.is_empty() {
+                println!("  alternates: {}", m.alternate_urls.join(", "));
+            }
         }
     }
     Ok(())
@@ -518,6 +521,7 @@ async fn cmd_chat(opts: &GlobalOpts, args: &[String]) -> Result<(), String> {
             allow_insecure_ws: opts.insecure_http,
             allow_remote_serial_os_fallback: false,
             allow_remote_hw_probe: true,
+            auto_reconnect: true,
         },
     )
     .await?;
@@ -579,6 +583,12 @@ async fn cmd_chat(opts: &GlobalOpts, args: &[String]) -> Result<(), String> {
                     }
                     Ok(NodeEvent::RelayError { code, detail, .. }) => {
                         eprintln!("[relay error {code}] {detail}");
+                    }
+                    Ok(NodeEvent::Reconnecting { reason, attempt }) => {
+                        eprintln!("[reconnecting #{attempt}] {reason}");
+                    }
+                    Ok(NodeEvent::Reconnected) => {
+                        println!("[reconnected; E2E CubeHash sessions preserved]");
                     }
                     Ok(NodeEvent::Disconnected { reason }) => {
                         eprintln!("[disconnected] {reason}");
@@ -699,6 +709,7 @@ async fn cmd_hw(opts: &GlobalOpts, args: &[String]) -> Result<(), String> {
                             allow_insecure_ws: opts.insecure_http,
                             allow_remote_serial_os_fallback: false,
                             allow_remote_hw_probe: true,
+                            auto_reconnect: true,
                         },
                     )
                     .await?;

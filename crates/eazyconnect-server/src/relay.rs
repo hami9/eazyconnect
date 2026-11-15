@@ -11,17 +11,20 @@ use eazyconnect_core::{
 };
 use eazyconnect_hw::{validate_id, DeviceIdentity};
 use futures_util::{SinkExt, StreamExt};
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc, oneshot, RwLock};
 
 use crate::auth::AuthStore;
 
 const MAX_TELEMETRY_HISTORY: usize = 100;
 const WS_AUTH_TIMEOUT: Duration = Duration::from_secs(10);
+const WS_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
+const WS_IDLE_TIMEOUT: Duration = Duration::from_secs(65);
 
 struct ActivePeer {
     conn_id: u64,
     ed25519_pub: [u8; 32],
     tx: mpsc::UnboundedSender<Message>,
+    shutdown_tx: Option<oneshot::Sender<()>>,
 }
 
 /// Zero-knowledge blind relay state embedded in `eazyconnect-server`.
@@ -156,7 +159,7 @@ pub async fn handle_relay_socket(socket: WebSocket, state: BlindRelayState) {
         }
     }
 
-    let mut authed: Option<(String, [u8; 32])> = None;
+    let mut authed: Option<(String, [u8; 32], oneshot::Receiver<()>)> = None;
     let deadline = tokio::time::Instant::now() + WS_AUTH_TIMEOUT;
 
     loop {
@@ -172,6 +175,15 @@ pub async fn handle_relay_socket(socket: WebSocket, state: BlindRelayState) {
         let Some(Ok(msg)) = next_item else {
             break;
         };
+        match &msg {
+            Message::Ping(p) => {
+                let _ = tx.send(Message::Pong(p.clone()));
+                continue;
+            }
+            Message::Pong(_) => continue,
+            Message::Close(_) => break,
+            _ => {}
+        }
         let Message::Text(text) = msg else {
             continue;
         };
@@ -204,24 +216,35 @@ pub async fn handle_relay_socket(socket: WebSocket, state: BlindRelayState) {
                     }
                 }
 
-                {
+                // Atomically reclaim any stale half-open session owned by the same Ed25519 key
+                // (common after VPN tunnel switches or brief connectivity drops).
+                let (shutdown_tx, shutdown_rx) = oneshot::channel();
+                let displaced = {
                     let mut clients = state.clients.write().await;
-                    if clients.contains_key(&clean_id) {
-                        send_ws_error(&tx, "id_in_use", "client_id is already active on relay")
-                            .await;
-                        break;
-                    }
                     clients.insert(
                         clean_id.clone(),
                         ActivePeer {
                             conn_id,
                             ed25519_pub,
                             tx: tx.clone(),
+                            shutdown_tx: Some(shutdown_tx),
                         },
-                    );
+                    )
+                };
+                if let Some(mut old_peer) = displaced {
+                    send_ws_error(
+                        &old_peer.tx,
+                        "session_replaced",
+                        "client_id session reclaimed by verified Ed25519 reconnect",
+                    )
+                    .await;
+                    let _ = old_peer.tx.send(Message::Close(None));
+                    if let Some(sig) = old_peer.shutdown_tx.take() {
+                        let _ = sig.send(());
+                    }
                 }
 
-                authed = Some((clean_id.clone(), ed25519_pub));
+                authed = Some((clean_id.clone(), ed25519_pub, shutdown_rx));
                 let online_peers = state.current_peer_identities().await;
                 let reg = RelayFrame::Registered {
                     client_id: clean_id,
@@ -239,15 +262,48 @@ pub async fn handle_relay_socket(socket: WebSocket, state: BlindRelayState) {
         }
     }
 
-    let Some((authed_id, authed_pub)) = authed else {
+    let Some((authed_id, authed_pub, mut shutdown_rx)) = authed else {
         tokio::time::sleep(Duration::from_millis(25)).await;
         writer_task.abort();
         return;
     };
 
-    while let Some(Ok(msg)) = ws_rx.next().await {
-        let Message::Text(text) = msg else {
-            continue;
+    let mut heartbeat = tokio::time::interval(WS_HEARTBEAT_INTERVAL);
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    heartbeat.tick().await;
+    let mut last_rx = tokio::time::Instant::now();
+
+    loop {
+        let msg = tokio::select! {
+            _ = &mut shutdown_rx => break,
+            _ = heartbeat.tick() => {
+                if last_rx.elapsed() > WS_IDLE_TIMEOUT {
+                    send_ws_error(&tx, "idle_timeout", "WebSocket keepalive expired").await;
+                    break;
+                }
+                if tx.send(Message::Ping(Vec::new().into())).is_err() {
+                    break;
+                }
+                continue;
+            }
+            maybe_ws = ws_rx.next() => {
+                match maybe_ws {
+                    Some(Ok(msg)) => msg,
+                    _ => break,
+                }
+            }
+        };
+
+        last_rx = tokio::time::Instant::now();
+        let text = match msg {
+            Message::Text(text) => text,
+            Message::Ping(payload) => {
+                let _ = tx.send(Message::Pong(payload));
+                continue;
+            }
+            Message::Pong(_) => continue,
+            Message::Close(_) => break,
+            Message::Binary(_) => continue,
         };
         let Ok(frame) = serde_json::from_str::<RelayFrame>(&text) else {
             continue;
@@ -418,12 +474,17 @@ pub async fn handle_relay_socket(socket: WebSocket, state: BlindRelayState) {
         }
     }
 
-    {
+    let removed = {
         let mut guard = state.clients.write().await;
         if guard.get(&authed_id).is_some_and(|e| e.conn_id == conn_id) {
             guard.remove(&authed_id);
+            true
+        } else {
+            false
         }
+    };
+    if removed {
+        state.broadcast_peer_list().await;
     }
-    state.broadcast_peer_list().await;
     writer_task.abort();
 }

@@ -1,13 +1,14 @@
 use std::collections::{HashMap, VecDeque};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex as StdMutex};
+use std::time::Duration;
 
 use cubehash_core::{DuplexCubeSession, HoneyProfile, MeshAuditStats, ReceiveOutcome};
 use eazyconnect_core::{
-    decode_app_payload, encode_app_payload, epoch_hop_sign_bytes, pair_accept_sign_bytes,
-    pair_offer_sign_bytes, parse_endpoint_url, provision_duplex_from_ecdh,
-    relay_auth_challenge_sign_bytes, ClientTlsConfig, EazyAppMessage, EazyMeshProfile,
-    PairTranscriptParams, PeerIdentity, RelayFrame,
+    connect_tcp_keepalive, decode_app_payload, encode_app_payload, epoch_hop_sign_bytes,
+    pair_accept_sign_bytes, pair_offer_sign_bytes, parse_endpoint_url,
+    provision_duplex_from_ecdh, relay_auth_challenge_sign_bytes, ClientTlsConfig, EazyAppMessage,
+    EazyMeshProfile, PairTranscriptParams, PeerIdentity, RelayFrame,
 };
 use eazyconnect_hw::{
     collect_hardware_report, send_serial_command, DeviceIdentity, SerialTransport,
@@ -15,12 +16,15 @@ use eazyconnect_hw::{
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::net::TcpStream;
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::Zeroize;
+
+const WS_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+const WS_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
+const WS_IDLE_TIMEOUT: Duration = Duration::from_secs(65);
 
 pub trait AsyncReadWrite: AsyncRead + AsyncWrite + Send {}
 impl<T: AsyncRead + AsyncWrite + Send> AsyncReadWrite for T {}
@@ -33,6 +37,7 @@ pub struct NodeConnectOptions {
     pub allow_insecure_ws: bool,
     pub allow_remote_serial_os_fallback: bool,
     pub allow_remote_hw_probe: bool,
+    pub auto_reconnect: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -80,6 +85,11 @@ pub enum NodeEvent {
         detail: String,
         peer: Option<String>,
     },
+    Reconnecting {
+        reason: String,
+        attempt: u32,
+    },
+    Reconnected,
     Disconnected {
         reason: String,
     },
@@ -185,92 +195,108 @@ pub struct EazyNode {
     task_handle: Option<JoinHandle<()>>,
 }
 
+async fn connect_and_register_ws(
+    identity: &DeviceIdentity,
+    opts: &NodeConnectOptions,
+) -> Result<(tokio_tungstenite::WebSocketStream<BoxedStream>, Vec<PeerIdentity>), String> {
+    let ws_url = normalize_ws_url(&opts.ws_url)?;
+    let endpoint = parse_endpoint_url(&ws_url)?;
+    if !endpoint.is_tls && !opts.allow_insecure_ws {
+        return Err(format!(
+            "refusing plaintext ws:// connection '{}' without allow_insecure_ws opt-in",
+            endpoint.full_url
+        ));
+    }
+
+    let tcp = connect_tcp_keepalive(&endpoint.tcp_addr, WS_CONNECT_TIMEOUT).await?;
+
+    let stream: BoxedStream = if endpoint.is_tls {
+        let connector = opts.tls_config.build_connector()?;
+        let tls_stream = tokio::time::timeout(
+            WS_CONNECT_TIMEOUT,
+            connector.connect(endpoint.server_name.clone(), tcp),
+        )
+        .await
+        .map_err(|_| "WSS TLS handshake timed out".to_string())?
+        .map_err(|e| format!("WSS TLS handshake failed: {e}"))?;
+        Box::pin(tls_stream)
+    } else {
+        Box::pin(tcp)
+    };
+
+    let (mut ws_stream, _resp) = tokio::time::timeout(
+        WS_CONNECT_TIMEOUT,
+        tokio_tungstenite::client_async(&ws_url, stream),
+    )
+    .await
+    .map_err(|_| format!("WebSocket upgrade timed out on {ws_url}"))?
+    .map_err(|e| format!("WebSocket upgrade failed on {ws_url}: {e}"))?;
+
+    let challenge_nonce = loop {
+        match tokio::time::timeout(WS_CONNECT_TIMEOUT, ws_stream.next()).await {
+            Ok(Some(Ok(WsMessage::Text(txt)))) => {
+                let frame: RelayFrame = serde_json::from_str(&txt)
+                    .map_err(|e| format!("invalid relay frame during auth: {e}"))?;
+                match frame {
+                    RelayFrame::AuthChallenge { nonce } => break nonce,
+                    RelayFrame::RelayError { code, detail, .. } => {
+                        return Err(format!("relay error ({code}): {detail}"));
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Some(Ok(WsMessage::Close(_)))) | Ok(None) => {
+                return Err("relay closed connection before auth challenge".to_string());
+            }
+            Ok(Some(Ok(_))) => continue,
+            Ok(Some(Err(e))) => return Err(format!("WS error waiting for challenge: {e}")),
+            Err(_) => return Err("timed out waiting for relay AuthChallenge".to_string()),
+        }
+    };
+
+    let sig_msg = relay_auth_challenge_sign_bytes(&challenge_nonce, identity.client_id());
+    let reg = RelayFrame::RegisterAuth {
+        client_id: identity.client_id().to_string(),
+        ed25519_pub: identity.ed25519_pub(),
+        signature: identity.sign(&sig_msg),
+    };
+    let reg_txt = serde_json::to_string(&reg).map_err(|e| e.to_string())?;
+    ws_stream
+        .send(WsMessage::Text(reg_txt.into()))
+        .await
+        .map_err(|e| format!("failed to send RegisterAuth: {e}"))?;
+
+    let initial_peers = loop {
+        match tokio::time::timeout(WS_CONNECT_TIMEOUT, ws_stream.next()).await {
+            Ok(Some(Ok(WsMessage::Text(txt)))) => {
+                let frame: RelayFrame = serde_json::from_str(&txt)
+                    .map_err(|e| format!("invalid relay response: {e}"))?;
+                match frame {
+                    RelayFrame::Registered { online_peers, .. } => break online_peers,
+                    RelayFrame::RelayError { code, detail, .. } => {
+                        return Err(format!("relay registration rejected ({code}): {detail}"));
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Some(Ok(WsMessage::Close(_)))) | Ok(None) => {
+                return Err("relay closed connection during registration".to_string());
+            }
+            Ok(Some(Ok(_))) => continue,
+            Ok(Some(Err(e))) => return Err(format!("WS error during registration: {e}")),
+            Err(_) => return Err("timed out waiting for relay Registered ack".to_string()),
+        }
+    };
+
+    Ok((ws_stream, initial_peers))
+}
+
 impl EazyNode {
     pub async fn connect(
         identity: DeviceIdentity,
         opts: NodeConnectOptions,
     ) -> Result<Self, String> {
-        let ws_url = normalize_ws_url(&opts.ws_url)?;
-        let endpoint = parse_endpoint_url(&ws_url)?;
-        if !endpoint.is_tls && !opts.allow_insecure_ws {
-            return Err(format!(
-                "refusing plaintext ws:// connection '{}' without allow_insecure_ws opt-in",
-                endpoint.full_url
-            ));
-        }
-
-        let tcp = TcpStream::connect(&endpoint.tcp_addr)
-            .await
-            .map_err(|e| format!("failed to connect TCP {} for WS: {e}", endpoint.tcp_addr))?;
-
-        let stream: BoxedStream = if endpoint.is_tls {
-            let connector = opts.tls_config.build_connector()?;
-            let tls_stream = connector
-                .connect(endpoint.server_name.clone(), tcp)
-                .await
-                .map_err(|e| format!("WSS TLS handshake failed: {e}"))?;
-            Box::pin(tls_stream)
-        } else {
-            Box::pin(tcp)
-        };
-
-        let (mut ws_stream, _resp) = tokio_tungstenite::client_async(&ws_url, stream)
-            .await
-            .map_err(|e| format!("WebSocket upgrade failed on {ws_url}: {e}"))?;
-
-        let challenge_nonce = loop {
-            match ws_stream.next().await {
-                Some(Ok(WsMessage::Text(txt))) => {
-                    let frame: RelayFrame = serde_json::from_str(&txt)
-                        .map_err(|e| format!("invalid relay frame during auth: {e}"))?;
-                    match frame {
-                        RelayFrame::AuthChallenge { nonce } => break nonce,
-                        RelayFrame::RelayError { code, detail, .. } => {
-                            return Err(format!("relay error ({code}): {detail}"));
-                        }
-                        _ => {}
-                    }
-                }
-                Some(Ok(WsMessage::Close(_))) | None => {
-                    return Err("relay closed connection before auth challenge".to_string());
-                }
-                Some(Ok(_)) => continue,
-                Some(Err(e)) => return Err(format!("WS error waiting for challenge: {e}")),
-            }
-        };
-
-        let sig_msg = relay_auth_challenge_sign_bytes(&challenge_nonce, identity.client_id());
-        let reg = RelayFrame::RegisterAuth {
-            client_id: identity.client_id().to_string(),
-            ed25519_pub: identity.ed25519_pub(),
-            signature: identity.sign(&sig_msg),
-        };
-        let reg_txt = serde_json::to_string(&reg).map_err(|e| e.to_string())?;
-        ws_stream
-            .send(WsMessage::Text(reg_txt.into()))
-            .await
-            .map_err(|e| format!("failed to send RegisterAuth: {e}"))?;
-
-        let initial_peers = loop {
-            match ws_stream.next().await {
-                Some(Ok(WsMessage::Text(txt))) => {
-                    let frame: RelayFrame = serde_json::from_str(&txt)
-                        .map_err(|e| format!("invalid relay response: {e}"))?;
-                    match frame {
-                        RelayFrame::Registered { online_peers, .. } => break online_peers,
-                        RelayFrame::RelayError { code, detail, .. } => {
-                            return Err(format!("relay registration rejected ({code}): {detail}"));
-                        }
-                        _ => {}
-                    }
-                }
-                Some(Ok(WsMessage::Close(_))) | None => {
-                    return Err("relay closed connection during registration".to_string());
-                }
-                Some(Ok(_)) => continue,
-                Some(Err(e)) => return Err(format!("WS error during registration: {e}")),
-            }
-        };
+        let (ws_stream, initial_peers) = connect_and_register_ws(&identity, &opts).await?;
 
         let client_id = identity.client_id().to_string();
         let ed25519_pub = identity.ed25519_pub();
@@ -286,13 +312,12 @@ impl EazyNode {
         let cmd_tx_actor = cmd_tx.clone();
         let task_handle = tokio::spawn(run_node_actor(
             identity,
+            opts,
             ws_stream,
             initial_peers,
             cmd_rx,
             cmd_tx_actor,
             events_clone,
-            opts.allow_remote_serial_os_fallback,
-            opts.allow_remote_hw_probe,
         ));
 
         Ok(Self {
@@ -499,19 +524,77 @@ struct ActorState {
     self_cmd_tx: mpsc::UnboundedSender<NodeCommand>,
 }
 
+fn rollback_inflight_sends(state: &mut ActorState, reason: &str) {
+    for sess in state.sessions.values_mut() {
+        if let Some(inflight) = sess.inflight.take() {
+            let _ = sess.session.rollback_outbound();
+            let _ = inflight.done_tx.send(Err(format!(
+                "relay transport interrupted before DeliveryAck ({reason})"
+            )));
+        }
+    }
+}
+
+fn session_audit_snapshot(
+    sessions: &HashMap<String, PeerSessionEntry>,
+    peer_id: &str,
+) -> Result<(String, MeshAuditStats, MeshAuditStats), String> {
+    sessions
+        .get(peer_id)
+        .map(|entry| {
+            (
+                entry.safety_fingerprint.clone(),
+                entry.session.tx.audit_stats(),
+                entry.session.rx.audit_stats(),
+            )
+        })
+        .ok_or_else(|| format!("no active session for '{peer_id}'"))
+}
+
+fn reject_offline_command(
+    online_peers: &[PeerIdentity],
+    sessions: &HashMap<String, PeerSessionEntry>,
+    serial_bridges: &mut HashMap<String, Arc<StdMutex<Box<dyn SerialTransport>>>>,
+    cmd: NodeCommand,
+) -> bool {
+    match cmd {
+        NodeCommand::Shutdown => return true,
+        NodeCommand::GetOnlinePeers { reply } => {
+            let _ = reply.send(online_peers.to_vec());
+        }
+        NodeCommand::AttachSerialBridge { port, transport } => {
+            serial_bridges.insert(port, transport);
+        }
+        NodeCommand::SendPairOffer { reply, .. }
+        | NodeCommand::SendAppMessage { reply, .. } => {
+            let _ = reply.send(Err("relay reconnecting".to_string()));
+        }
+        NodeCommand::AcceptPairOffer { reply, .. } => {
+            let _ = reply.send(Err("relay reconnecting".to_string()));
+        }
+        NodeCommand::SendTamperedProbe { reply, .. } => {
+            let _ = reply.send(Err("relay reconnecting".to_string()));
+        }
+        NodeCommand::HopEpoch { reply, .. } => {
+            let _ = reply.send(Err("relay reconnecting".to_string()));
+        }
+        NodeCommand::GetSessionAudit { peer_id, reply } => {
+            let _ = reply.send(session_audit_snapshot(sessions, &peer_id));
+        }
+    }
+    false
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_node_actor(
     identity: DeviceIdentity,
-    ws_stream: tokio_tungstenite::WebSocketStream<BoxedStream>,
+    opts: NodeConnectOptions,
+    mut ws_stream: tokio_tungstenite::WebSocketStream<BoxedStream>,
     initial_peers: Vec<PeerIdentity>,
     mut cmd_rx: mpsc::UnboundedReceiver<NodeCommand>,
     self_cmd_tx: mpsc::UnboundedSender<NodeCommand>,
     events_tx: broadcast::Sender<NodeEvent>,
-    allow_remote_serial_os_fallback: bool,
-    allow_remote_hw_probe: bool,
 ) {
-    let (ws_sink, mut ws_rx) = ws_stream.split();
-    let ws_sink = Arc::new(Mutex::new(ws_sink));
     let mut state = ActorState {
         identity,
         online_peers: initial_peers,
@@ -519,58 +602,159 @@ async fn run_node_actor(
         inbound_offers: HashMap::new(),
         sessions: HashMap::new(),
         serial_bridges: HashMap::new(),
-        allow_remote_serial_os_fallback,
-        allow_remote_hw_probe,
+        allow_remote_serial_os_fallback: opts.allow_remote_serial_os_fallback,
+        allow_remote_hw_probe: opts.allow_remote_hw_probe,
         events_tx,
         self_cmd_tx,
     };
 
-    loop {
-        tokio::select! {
-            maybe_cmd = cmd_rx.recv() => {
-                let Some(cmd) = maybe_cmd else { break; };
-                if matches!(cmd, NodeCommand::Shutdown) {
-                    let _ = ws_sink.lock().await.close().await;
-                    break;
+    'outer: loop {
+        let (ws_sink, mut ws_rx) = ws_stream.split();
+        let ws_sink = Arc::new(Mutex::new(ws_sink));
+        let mut heartbeat = tokio::time::interval(WS_HEARTBEAT_INTERVAL);
+        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        heartbeat.tick().await;
+        let mut last_rx = tokio::time::Instant::now();
+
+        let peer_ids: Vec<String> = state.sessions.keys().cloned().collect();
+        for pid in peer_ids {
+            pump_outbound_for_peer(&mut state, &ws_sink, &pid).await;
+        }
+
+        let disconnect_reason = loop {
+            tokio::select! {
+                maybe_cmd = cmd_rx.recv() => {
+                    let Some(cmd) = maybe_cmd else { break 'outer; };
+                    if matches!(cmd, NodeCommand::Shutdown) {
+                        let _ = ws_sink.lock().await.close().await;
+                        break 'outer;
+                    }
+                    handle_command(&mut state, &ws_sink, cmd).await;
                 }
-                handle_command(&mut state, &ws_sink, cmd).await;
-            }
-            maybe_ws = ws_rx.next() => {
-                match maybe_ws {
-                    Some(Ok(WsMessage::Text(txt))) => {
-                        match serde_json::from_str::<RelayFrame>(&txt) {
-                            Ok(frame) => handle_incoming_frame(&mut state, &ws_sink, frame).await,
-                            Err(e) => {
-                                let _ = state.events_tx.send(NodeEvent::RelayError {
-                                    code: "bad_frame".to_string(),
-                                    detail: format!("invalid JSON from relay: {e}"),
-                                    peer: None,
-                                });
+                _ = heartbeat.tick() => {
+                    if last_rx.elapsed() > WS_IDLE_TIMEOUT {
+                        break "WebSocket keepalive expired".to_string();
+                    }
+                    if ws_sink.lock().await.send(WsMessage::Ping(Vec::new().into())).await.is_err() {
+                        break "WebSocket ping send failed".to_string();
+                    }
+                }
+                maybe_ws = ws_rx.next() => {
+                    match maybe_ws {
+                        Some(Ok(WsMessage::Text(txt))) => {
+                            last_rx = tokio::time::Instant::now();
+                            match serde_json::from_str::<RelayFrame>(&txt) {
+                                Ok(frame) => handle_incoming_frame(&mut state, &ws_sink, frame).await,
+                                Err(e) => {
+                                    let _ = state.events_tx.send(NodeEvent::RelayError {
+                                        code: "bad_frame".to_string(),
+                                        detail: format!("invalid JSON from relay: {e}"),
+                                        peer: None,
+                                    });
+                                }
                             }
                         }
+                        Some(Ok(WsMessage::Ping(payload))) => {
+                            last_rx = tokio::time::Instant::now();
+                            let _ = ws_sink.lock().await.send(WsMessage::Pong(payload)).await;
+                        }
+                        Some(Ok(WsMessage::Pong(_))) => {
+                            last_rx = tokio::time::Instant::now();
+                        }
+                        Some(Ok(WsMessage::Close(_))) => {
+                            break "relay closed WebSocket".to_string();
+                        }
+                        Some(Ok(_)) => {
+                            last_rx = tokio::time::Instant::now();
+                        }
+                        Some(Err(e)) => {
+                            break format!("WebSocket read error: {e}");
+                        }
+                        None => {
+                            break "WebSocket stream ended".to_string();
+                        }
                     }
-                    Some(Ok(WsMessage::Ping(payload))) => {
-                        let _ = ws_sink.lock().await.send(WsMessage::Pong(payload)).await;
+                }
+            }
+        };
+
+        rollback_inflight_sends(&mut state, &disconnect_reason);
+        if !opts.auto_reconnect {
+            let _ = state.events_tx.send(NodeEvent::Disconnected {
+                reason: disconnect_reason,
+            });
+            break;
+        }
+
+        let mut attempt: u32 = 1;
+        loop {
+            let _ = state.events_tx.send(NodeEvent::Reconnecting {
+                reason: disconnect_reason.clone(),
+                attempt,
+            });
+            let backoff = if attempt == 1 {
+                Duration::from_millis(200)
+            } else {
+                Duration::from_secs(u64::from((attempt - 1).min(5)))
+            };
+            let sleep_until = tokio::time::sleep(backoff);
+            tokio::pin!(sleep_until);
+            loop {
+                tokio::select! {
+                    _ = &mut sleep_until => break,
+                    maybe_cmd = cmd_rx.recv() => {
+                        match maybe_cmd {
+                            Some(cmd) => {
+                                if reject_offline_command(
+                                    &state.online_peers,
+                                    &state.sessions,
+                                    &mut state.serial_bridges,
+                                    cmd,
+                                ) {
+                                    break 'outer;
+                                }
+                            }
+                            None => break 'outer,
+                        }
                     }
-                    Some(Ok(WsMessage::Close(_))) => {
-                        let _ = state.events_tx.send(NodeEvent::Disconnected {
-                            reason: "relay closed WebSocket".to_string(),
-                        });
-                        break;
+                }
+            }
+
+            let connect_fut = connect_and_register_ws(&state.identity, &opts);
+            tokio::pin!(connect_fut);
+            let res = loop {
+                tokio::select! {
+                    res = &mut connect_fut => break res,
+                    maybe_cmd = cmd_rx.recv() => {
+                        match maybe_cmd {
+                            Some(cmd) => {
+                                if reject_offline_command(
+                                    &state.online_peers,
+                                    &state.sessions,
+                                    &mut state.serial_bridges,
+                                    cmd,
+                                ) {
+                                    break 'outer;
+                                }
+                            }
+                            None => break 'outer,
+                        }
                     }
-                    Some(Ok(_)) => {}
-                    Some(Err(e)) => {
-                        let _ = state.events_tx.send(NodeEvent::Disconnected {
-                            reason: format!("WebSocket read error: {e}"),
-                        });
-                        break;
-                    }
-                    None => {
-                        let _ = state.events_tx.send(NodeEvent::Disconnected {
-                            reason: "WebSocket stream ended".to_string(),
-                        });
-                        break;
-                    }
+                }
+            };
+
+            match res {
+                Ok((new_ws, new_peers)) => {
+                    state.online_peers = new_peers.clone();
+                    let _ = state.events_tx.send(NodeEvent::Reconnected);
+                    let _ = state.events_tx.send(NodeEvent::PeerListUpdated {
+                        online_peers: new_peers,
+                    });
+                    ws_stream = new_ws;
+                    break;
+                }
+                Err(_) => {
+                    attempt = attempt.saturating_add(1);
                 }
             }
         }
@@ -627,15 +811,7 @@ async fn handle_command(
             let _ = reply.send(res);
         }
         NodeCommand::GetSessionAudit { peer_id, reply } => {
-            let res = match state.sessions.get(&peer_id) {
-                Some(entry) => Ok((
-                    entry.safety_fingerprint.clone(),
-                    entry.session.tx.audit_stats(),
-                    entry.session.rx.audit_stats(),
-                )),
-                None => Err(format!("no active session for '{peer_id}'")),
-            };
-            let _ = reply.send(res);
+            let _ = reply.send(session_audit_snapshot(&state.sessions, &peer_id));
         }
         NodeCommand::Shutdown => {}
     }

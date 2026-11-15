@@ -17,11 +17,13 @@
 
 ### Device Enrollment & Impersonation Defense
 - Devices enroll via challenge-response: `GET /api/v1/auth/challenge` -> client signs `eazyconnect-http-auth-v2 || nonce || len(client_id) || client_id || len(challenge_id) || challenge_id` with its `Ed25519` key -> `POST /api/v1/auth/verify`.
-- Server supports `EnrollmentPolicy::OpenLan` or `EnrollmentPolicy::InviteCode(code)` checked in constant time (`subtle::ConstantTimeEq`).
+- Server supports `EnrollmentPolicy::OpenLan` or `EnrollmentPolicy::InviteCode(code)` checked in constant time (`subtle::ConstantTimeEq`). When active VPN adapters are detected under `OpenLan` (without `--lan-only`), `eazyconnect-server` warns the operator at startup to enable `--invite-code`.
 - On first valid enrollment (or first WS registration), the device's `[u8; 32]` `Ed25519` public key is pinned to `client_id` in `<data-dir>/devices.json` (`check_or_pin_device_key`). Subsequent attempts using the same `client_id` with any different key fail with `403 identity_mismatch` on HTTP and rejection on `/ws`.
+- When a roaming or reconnecting device proves ownership of its pinned `Ed25519` key over a fresh WebSocket `challenge_nonce`, the relay atomically replaces any lingering half-open session (`session_replaced`); mismatched keys are still blocked before session replacement.
+- Default self-signed server certificates are persisted under `<data-dir>/tls/{cert.pem,key.pem}` (`0600` key on Unix) so client `--tls-pin` values remain valid across server restarts until `--regen-tls` is invoked.
 
-### Signed LAN Discovery (UDP 37020)
-- `DISCOVER_EAZYCONNECT` probes return a `DiscoveryBeacon` JSON signed with the Master's `Ed25519` key over `eazyconnect-discover-v2 || version || host || port || https || tls_cert_sha256_hex || master_ed25519_pub`.
+### Signed Discovery (`UDP 37020`)
+- `DISCOVER_EAZYCONNECT` probes return a `DiscoveryBeacon` JSON signed with the Master's `Ed25519` key over `eazyconnect-discover-v3 || version || host || port || https || tls_cert_sha256_hex || master_ed25519_pub || alternate_urls`.
 - `discover_masters` verifies every beacon signature (`signature_valid`) before returning it to CLI callers or diagnostics.
 
 ## 3. Client-Side E2E File Vault (`EZV1`)
@@ -52,4 +54,4 @@ Copying ciphertext off the Master Server or attempting decryption on an unauthor
 
 - `validate_id` (`eazyconnect-hw`): enforces non-empty identifiers (<= 128 chars) containing only `[A-Za-z0-9_.-]` and rejects traversal sequences (`..`, slashes, colons).
 - `validate_rel_path` (`eazyconnect-server`): rejects empty/oversized paths (> 512 chars), leading slashes, drive letters (`:`), NUL/control characters, empty segments, `.` and `..`, and non-normal OS path components; skips symlinks during recursive listing.
-- Secret/state files are excluded via `.gitignore` (`bootstrap-admin.txt`, `users.json`, `devices.json`, `tokens.json`, `config.json`, `sync-manifest.json`, `*.key`, `*.pem`, `*.sealed`, `*.keystore`, `*keystore*.json`, `*.eazyconnect-id.json`, `keystore/`, `data/`, `target/`).
+- Secret/state files are excluded via `.gitignore` (`bootstrap-admin.txt`, `users.json`, `devices.json`, `tokens.json`, `config.json`, `sync-manifest.json`, `*.key`, `*.pem`, `*.sealed`, `*.keystore`, `*keystore*.json`, `*.eazyconnect-id.json`, `tls/`, `keystore/`, `data/`, `target/`).
