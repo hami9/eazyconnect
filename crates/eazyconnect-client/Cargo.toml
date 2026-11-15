@@ -1,0 +1,31 @@
+[package]
+name = "eazyconnect-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Headless Rust CLI client, E2E sync daemon, CubeHash messenger, and hardware COM/USB/HID bridge"
+
+[dependencies]
+blake3.workspace = true
+bytes.workspace = true
+cubehash-core = { path = "../cubehash-core" }
+eazyconnect-core = { path = "../eazyconnect-core" }
+eazyconnect-hw = { path = "../eazyconnect-hw" }
+futures-util.workspace = true
+getrandom.workspace = true
+hex.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+tokio-rustls.workspace = true
+tokio-tungstenite.workspace = true
+x25519-dalek.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+eazyconnect-server = { path = "../eazyconnect-server" }

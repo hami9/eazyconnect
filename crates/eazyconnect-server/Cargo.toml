@@ -1,0 +1,30 @@
+[package]
+name = "eazyconnect-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "High-speed TLS Master Server, LAN discovery responder, file sync host, and zero-knowledge CubeHash relay"
+
+[dependencies]
+argon2.workspace = true
+axum.workspace = true
+blake3.workspace = true
+bytes.workspace = true
+cubehash-core = { path = "../cubehash-core" }
+eazyconnect-core = { path = "../eazyconnect-core" }
+eazyconnect-hw = { path = "../eazyconnect-hw" }
+futures-util.workspace = true
+getrandom.workspace = true
+hex.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+tokio.workspace = true
+tokio-rustls.workspace = true
+tower.workspace = true
+zeroize.workspace = true
