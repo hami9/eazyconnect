@@ -1,0 +1,54 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/cubehash-core",
+    "crates/eazyconnect-hw",
+    "crates/eazyconnect-core",
+    "crates/eazyconnect-server",
+    "crates/eazyconnect-client",
+]
+
+[workspace.package]
+version = "0.2.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+authors = ["EazyConnect Contributors"]
+description = "High-speed Rust LAN file sync, hardware-bridged communication, and CubeHash E2E security platform"
+
+[workspace.dependencies]
+argon2 = "0.5"
+axum = { version = "0.8", features = ["ws", "multipart"] }
+blake2 = "0.10"
+blake3 = "1.8"
+bytes = "1"
+chacha20poly1305 = "0.10"
+ed25519-dalek = { version = "2.2", features = ["rand_core", "zeroize"] }
+futures-util = "0.3"
+getrandom = "0.2"
+hex = "0.4"
+hkdf = "0.12"
+hmac = "0.12"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "server", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "http1", "http2", "server-auto", "tokio"] }
+nusb = "0.1"
+rand_core = { version = "0.6", features = ["getrandom"] }
+rcgen = { version = "0.13", default-features = false, features = ["crypto", "pem", "ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pemfile = "2.2"
+rustls-pki-types = "1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serialport = { version = "4", default-features = false }
+sha2 = "0.10"
+sha3 = "0.10"
+subtle = "2.6"
+thiserror = "2.0"
+tokio = { version = "1", features = ["full"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+tokio-tungstenite = { version = "0.26", default-features = false, features = ["connect", "handshake"] }
+tower = "0.5"
+webpki-roots = "0.26"
+windows-sys = "0.61"
+x25519-dalek = { version = "2.0", features = ["static_secrets", "zeroize"] }
+zeroize = { version = "1.8", features = ["derive"] }
