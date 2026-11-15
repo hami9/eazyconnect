@@ -1,6 +1,8 @@
+use std::collections::HashSet;
 use std::io::Cursor;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use rcgen::generate_simple_self_signed;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
@@ -11,15 +13,28 @@ use rustls::{
     CertificateError, ClientConfig, DigitallySignedStruct, Error as TlsError, RootCertStore,
     ServerConfig, SignatureScheme,
 };
-use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
+use rustls_pki_types::{CertificateDer, ServerName, UnixTime};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
-/// Master server TLS configuration (defaults to TLS with self-signed or PEM certs).
+/// Master server TLS configuration (defaults to TLS with persistent self-signed or PEM certs).
 #[derive(Clone, Debug)]
 pub enum ServerTlsConfig {
-    SelfSigned { san_hosts: Vec<String> },
-    PemFiles { cert_pem: Vec<u8>, key_pem: Vec<u8> },
+    SelfSigned {
+        san_hosts: Vec<String>,
+    },
+    /// Loads PEM files from `cert_path`/`key_path`, or generates and persists a stable self-signed
+    /// certificate on first start (preserving `--tls-pin` for remote VPN peers across restarts).
+    LoadOrCreateSelfSigned {
+        cert_path: PathBuf,
+        key_path: PathBuf,
+        san_hosts: Vec<String>,
+        force_regen: bool,
+    },
+    PemFiles {
+        cert_pem: Vec<u8>,
+        key_pem: Vec<u8>,
+    },
     /// Explicitly disables TLS (`http://` & `ws://`). Intended only for local testing.
     InsecureDisabled,
 }
@@ -32,6 +47,97 @@ impl ServerTlsConfig {
             .map_err(|e| format!("failed to read TLS key {}: {e}", key_path.display()))?;
         Ok(Self::PemFiles { cert_pem, key_pem })
     }
+}
+
+fn dedupe_san_hosts(san_hosts: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for host in san_hosts {
+        let trimmed = host.trim();
+        if !trimmed.is_empty() && seen.insert(trimmed.to_string()) {
+            out.push(trimmed.to_string());
+        }
+    }
+    if out.is_empty() {
+        out.push("localhost".to_string());
+        out.push("127.0.0.1".to_string());
+    }
+    out
+}
+
+fn generate_self_signed_pem(san_hosts: Vec<String>) -> Result<(Vec<u8>, Vec<u8>), String> {
+    let hosts = dedupe_san_hosts(san_hosts);
+    let certified = generate_simple_self_signed(hosts)
+        .map_err(|e| format!("failed to generate self-signed TLS cert: {e}"))?;
+    let cert_pem = certified.cert.pem().into_bytes();
+    let key_pem = certified.key_pair.serialize_pem().into_bytes();
+    Ok((cert_pem, key_pem))
+}
+
+fn write_pem_atomic(path: &Path, data: &[u8], is_secret_key: bool) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("failed to create TLS dir {}: {e}", parent.display()))?;
+        }
+    }
+    let tmp_name = format!(
+        "{}.tmp.{}",
+        path.file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("tls.pem"),
+        std::process::id()
+    );
+    let tmp_path = path.with_file_name(tmp_name);
+    std::fs::write(&tmp_path, data)
+        .map_err(|e| format!("failed to write temporary TLS file {}: {e}", tmp_path.display()))?;
+
+    #[cfg(unix)]
+    if is_secret_key {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600)).map_err(
+            |e| format!("failed to restrict permissions on {}: {e}", tmp_path.display()),
+        )?;
+    }
+    #[cfg(not(unix))]
+    let _ = is_secret_key;
+
+    std::fs::rename(&tmp_path, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp_path);
+        format!("failed to commit TLS file {}: {e}", path.display())
+    })
+}
+
+fn build_tls_from_pem(cert_pem: Vec<u8>, key_pem: Vec<u8>) -> Result<BuiltServerTls, String> {
+    let mut cert_reader = Cursor::new(&cert_pem);
+    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut cert_reader)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("failed to parse TLS cert PEM: {e}"))?;
+    if certs.is_empty() {
+        return Err("TLS cert PEM contains no certificates".to_string());
+    }
+    let cert_sha256: [u8; 32] = Sha256::digest(certs[0].as_ref()).into();
+
+    let mut key_reader = Cursor::new(&key_pem);
+    let key_der = rustls_pemfile::private_key(&mut key_reader)
+        .map_err(|e| format!("failed to parse TLS key PEM: {e}"))?
+        .ok_or_else(|| "TLS key PEM contains no private key".to_string())?;
+
+    let mut server_cfg = ServerConfig::builder_with_provider(Arc::new(
+        rustls_ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(|e| e.to_string())?
+    .with_no_client_auth()
+    .with_single_cert(certs, key_der)
+    .map_err(|e| format!("failed to configure rustls server: {e}"))?;
+    server_cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
+
+    Ok(BuiltServerTls {
+        acceptor: Some(tokio_rustls::TlsAcceptor::from(Arc::new(server_cfg))),
+        cert_sha256: Some(cert_sha256),
+        cert_pem: Some(String::from_utf8_lossy(&cert_pem).into_owned()),
+    })
 }
 
 /// Prepared server TLS acceptor and SHA-256 certificate pin.
@@ -50,68 +156,60 @@ impl BuiltServerTls {
                 cert_sha256: None,
                 cert_pem: None,
             }),
-            ServerTlsConfig::SelfSigned { mut san_hosts } => {
-                if san_hosts.is_empty() {
-                    san_hosts.push("localhost".to_string());
-                    san_hosts.push("127.0.0.1".to_string());
+            ServerTlsConfig::SelfSigned { san_hosts } => {
+                let (cert_pem, key_pem) = generate_self_signed_pem(san_hosts)?;
+                build_tls_from_pem(cert_pem, key_pem)
+            }
+            ServerTlsConfig::LoadOrCreateSelfSigned {
+                cert_path,
+                key_path,
+                san_hosts,
+                force_regen,
+            } => {
+                if !force_regen && cert_path.exists() && key_path.exists() {
+                    let cert_pem = std::fs::read(&cert_path).map_err(|e| {
+                        format!("failed to read persisted TLS cert {}: {e}", cert_path.display())
+                    })?;
+                    let key_pem = std::fs::read(&key_path).map_err(|e| {
+                        format!("failed to read persisted TLS key {}: {e}", key_path.display())
+                    })?;
+                    return build_tls_from_pem(cert_pem, key_pem);
                 }
-                let certified = generate_simple_self_signed(san_hosts)
-                    .map_err(|e| format!("failed to generate self-signed TLS cert: {e}"))?;
-                let cert_pem = certified.cert.pem();
-                let cert_der = CertificateDer::from(certified.cert.der().to_vec());
-                let cert_sha256: [u8; 32] = Sha256::digest(cert_der.as_ref()).into();
-                let key_der = PrivateKeyDer::try_from(certified.key_pair.serialize_der())
-                    .map_err(|e| format!("invalid generated TLS key: {e}"))?;
 
-                let mut server_cfg = ServerConfig::builder_with_provider(Arc::new(
-                    rustls_ring::default_provider(),
-                ))
-                .with_safe_default_protocol_versions()
-                .map_err(|e| e.to_string())?
-                .with_no_client_auth()
-                .with_single_cert(vec![cert_der], key_der)
-                .map_err(|e| format!("failed to configure rustls server: {e}"))?;
-                server_cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
-
-                Ok(Self {
-                    acceptor: Some(tokio_rustls::TlsAcceptor::from(Arc::new(server_cfg))),
-                    cert_sha256: Some(cert_sha256),
-                    cert_pem: Some(cert_pem),
-                })
+                let (cert_pem, key_pem) = generate_self_signed_pem(san_hosts)?;
+                write_pem_atomic(&cert_path, &cert_pem, false)?;
+                write_pem_atomic(&key_path, &key_pem, true)?;
+                build_tls_from_pem(cert_pem, key_pem)
             }
             ServerTlsConfig::PemFiles { cert_pem, key_pem } => {
-                let mut cert_reader = Cursor::new(&cert_pem);
-                let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut cert_reader)
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(|e| format!("failed to parse TLS cert PEM: {e}"))?;
-                if certs.is_empty() {
-                    return Err("TLS cert PEM contains no certificates".to_string());
-                }
-                let cert_sha256: [u8; 32] = Sha256::digest(certs[0].as_ref()).into();
-
-                let mut key_reader = Cursor::new(&key_pem);
-                let key_der = rustls_pemfile::private_key(&mut key_reader)
-                    .map_err(|e| format!("failed to parse TLS key PEM: {e}"))?
-                    .ok_or_else(|| "TLS key PEM contains no private key".to_string())?;
-
-                let mut server_cfg = ServerConfig::builder_with_provider(Arc::new(
-                    rustls_ring::default_provider(),
-                ))
-                .with_safe_default_protocol_versions()
-                .map_err(|e| e.to_string())?
-                .with_no_client_auth()
-                .with_single_cert(certs, key_der)
-                .map_err(|e| format!("failed to configure rustls server: {e}"))?;
-                server_cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
-
-                Ok(Self {
-                    acceptor: Some(tokio_rustls::TlsAcceptor::from(Arc::new(server_cfg))),
-                    cert_sha256: Some(cert_sha256),
-                    cert_pem: Some(String::from_utf8_lossy(&cert_pem).into_owned()),
-                })
+                build_tls_from_pem(cert_pem, key_pem)
             }
         }
     }
+}
+
+/// Applies `TCP_NODELAY` and OS-level `SO_KEEPALIVE` probes for long-lived VPN/NAT connections.
+pub fn configure_tcp_keepalive(stream: &tokio::net::TcpStream) {
+    let _ = stream.set_nodelay(true);
+    let sock_ref = socket2::SockRef::from(stream);
+    let _ = sock_ref.set_keepalive(true);
+    let keepalive = socket2::TcpKeepalive::new()
+        .with_time(Duration::from_secs(20))
+        .with_interval(Duration::from_secs(10));
+    let _ = sock_ref.set_tcp_keepalive(&keepalive);
+}
+
+/// Connects a TCP stream with an explicit connect timeout and enables TCP keepalive + `TCP_NODELAY`.
+pub async fn connect_tcp_keepalive(
+    tcp_addr: &str,
+    connect_timeout: Duration,
+) -> Result<tokio::net::TcpStream, String> {
+    let stream = tokio::time::timeout(connect_timeout, tokio::net::TcpStream::connect(tcp_addr))
+        .await
+        .map_err(|_| format!("TCP connect timed out after {}s to {tcp_addr}", connect_timeout.as_secs()))?
+        .map_err(|e| format!("TCP connect failed to {tcp_addr}: {e}"))?;
+    configure_tcp_keepalive(&stream);
+    Ok(stream)
 }
 
 /// Client TLS trust policy shared cleanly across HTTPS REST calls and WSS WebSocket streams.
@@ -301,4 +399,57 @@ pub fn parse_sha256_pin_hex(input: &str) -> Result<[u8; 32], String> {
     let bytes = hex::decode(&cleaned).map_err(|e| format!("invalid hex digest: {e}"))?;
     <[u8; 32]>::try_from(bytes.as_slice())
         .map_err(|_| "expected 32-byte (64 hex characters) SHA-256 or Ed25519 key".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_persistent_self_signed_tls_pin_survives_reload_and_rotates_on_regen() {
+        let dir = std::env::temp_dir().join(format!(
+            "eazyconnect_tls_persist_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let cert_path = dir.join("tls").join("cert.pem");
+        let key_path = dir.join("tls").join("key.pem");
+
+        let first = BuiltServerTls::build(ServerTlsConfig::LoadOrCreateSelfSigned {
+            cert_path: cert_path.clone(),
+            key_path: key_path.clone(),
+            san_hosts: vec![
+                "localhost".to_string(),
+                "127.0.0.1".to_string(),
+                "10.8.0.1".to_string(),
+            ],
+            force_regen: false,
+        })
+        .expect("initial self-signed TLS generation");
+        assert!(cert_path.exists());
+        assert!(key_path.exists());
+
+        let second = BuiltServerTls::build(ServerTlsConfig::LoadOrCreateSelfSigned {
+            cert_path: cert_path.clone(),
+            key_path: key_path.clone(),
+            san_hosts: vec!["localhost".to_string()],
+            force_regen: false,
+        })
+        .expect("reload persisted TLS files");
+        assert_eq!(first.cert_sha256, second.cert_sha256);
+
+        let rotated = BuiltServerTls::build(ServerTlsConfig::LoadOrCreateSelfSigned {
+            cert_path,
+            key_path,
+            san_hosts: vec!["localhost".to_string(), "127.0.0.1".to_string()],
+            force_regen: true,
+        })
+        .expect("force_regen TLS rotation");
+        assert_ne!(first.cert_sha256, rotated.cert_sha256);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
