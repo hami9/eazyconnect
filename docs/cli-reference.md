@@ -16,10 +16,12 @@ eazyconnect-server service <install-task|uninstall-task> [--name <TaskName>] [OP
 | Flag | Default | Description |
 | --- | --- | --- |
 | `--listen <ip:port>` | `0.0.0.0:8000` | TCP bind address for HTTPS REST + WSS `/ws` |
-| `--data-dir <dir>` | `%LOCALAPPDATA%\eazyconnect-server` (Windows) / `data` | Directory holding `users.json`, `devices.json`, `tokens.json`, uploaded `files/`, `meta/`, `reports/`, `bootstrap-admin.txt` |
+| `--data-dir <dir>` | `%LOCALAPPDATA%\eazyconnect-server` (Windows) / `data` | Directory holding `users.json`, `devices.json`, `tokens.json`, `tls/`, uploaded `files/`, `meta/`, `reports/`, `bootstrap-admin.txt` |
 | `--keystore-dir <dir>` | `<data-dir>/keystore` | OS-sealed keystore for Master `Ed25519` identity |
-| `--tls-cert <pem>` | Self-signed generated | Path to custom server TLS certificate PEM |
-| `--tls-key <pem>` | Self-signed generated | Path to custom server TLS private key PEM |
+| `--tls-cert <pem>` | `<data-dir>/tls/cert.pem` | Path to custom server TLS certificate PEM |
+| `--tls-key <pem>` | `<data-dir>/tls/key.pem` | Path to custom server TLS private key PEM |
+| `--regen-tls` | Off (`false`) | Force-regenerate persisted self-signed `<data-dir>/tls/{cert,key}.pem` |
+| `--lan-only` | Off (`false`) | Bind strictly to primary non-VPN LAN IP when `--listen` is omitted |
 | `--insecure-http` | Off (`false`) | Disable TLS and serve plaintext HTTP/WS (testing only) |
 | `--discovery-port <u16>` | `37020` | UDP LAN discovery responder port (`0` disables) |
 | `--no-discovery` | Enabled | Disable UDP discovery responder |
@@ -60,7 +62,8 @@ eazyconnect-client [GLOBAL OPTIONS] <SUBCOMMAND> [ARGS...]
 ### Discovery & Authentication
 
 ```powershell
-# Broadcast Ed25519-signed UDP discovery query on LAN
+# Broadcast Ed25519-signed UDP discovery query on LAN (uses directed NIC broadcasts to bypass Exit VPNs)
+# Or target a remote Master over a WireGuard/Tailscale/ZeroTier VPN by unicast IP:
 eazyconnect-client discover [--target 255.255.255.255:37020] [--timeout-ms 1500]
 
 # Enroll DPAPI-sealed Ed25519 device identity (persists master URL & sealed token)

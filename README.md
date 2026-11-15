@@ -10,7 +10,8 @@ EazyConnect is a high-speed, headless LAN synchronization, zero-knowledge peer m
 - [Security Architecture & Threat Model](docs/security.md) — Hardware key custody, TOFU Ed25519 pinning, Argon2id/SHA-256 auth, E2E vault format, and blind relay guarantees.
 - [CLI Reference](docs/cli-reference.md) — Complete options and subcommands for `eazyconnect-server` and `eazyconnect-client`.
 - [Hardware & Peripheral Bridge](docs/hardware-bridge.md) — Windows DPAPI, TPM 2.0 CNG probe, `MachineGuid` lock, COM/Serial, USB, HID, and encrypted remote hardware bridging.
-- [Changelog](CHANGELOG.md) — Release history (`v0.1.0` -> `v0.2.0`).
+- [VPN & Dual-Homed Networks](docs/vpn-guide.md) — Mesh VPN setup (WireGuard, Tailscale, ZeroTier), Exit VPN LAN discovery bypass, persistent TLS pinning, and WSS auto-reconnect.
+- [Changelog](CHANGELOG.md) — Release history (`v0.1.0` -> `v0.2.0` + VPN support).
 
 ## Workspace Architecture
 

@@ -2,6 +2,18 @@
 
 All notable changes to **EazyConnect** are documented in this file.
 
+## Unreleased — VPN & Dual-Homed Network Support
+
+### VPN Topology & Discovery
+- Expanded `classify_vpn_adapter` in `eazyconnect-hw` for WireGuard, Tailscale, ZeroTier, OpenVPN, Cloudflare WARP, Wintun, Proton, Mullvad, Cisco AnyConnect, GlobalProtect, Outline, Nekoray/Sing-box, Forti, SoftEther, and Hamachi, and added Win32 IPv4 prefix (`ipv4_cidrs`) extraction to compute subnet-directed LAN broadcasts (`collect_lan_directed_broadcasts`) and preferred non-VPN LAN endpoints (`best_lan_ipv4`).
+- Updated `discover_masters` to transmit per-NIC subnet-directed broadcasts alongside `255.255.255.255:37020` so local LAN discovery continues working when a full-tunnel Exit VPN captures `0.0.0.0/0`.
+- Updated signed `DiscoveryBeacon` (`eazyconnect-discover-v3`) to match each requester's subnet (`select_beacon_endpoints`) and include secondary LAN/VPN endpoints inside `alternate_urls`.
+
+### Persistent TLS, Keepalive & Reconnect Resilience
+- Added `ServerTlsConfig::LoadOrCreateSelfSigned` so `eazyconnect-server` persists `<data-dir>/tls/cert.pem` and `<data-dir>/tls/key.pem` across restarts (keeping `--tls-pin` stable for remote VPN peers), automatically includes all active LAN + VPN IPv4 endpoints in X.509 SANs, and adds `--regen-tls` and `--lan-only` CLI options plus a startup warning when VPN adapters are up under `OpenLan`.
+- Added shared `configure_tcp_keepalive` / `connect_tcp_keepalive` helpers (`TCP_NODELAY` + 20s/10s `SO_KEEPALIVE` via `socket2`) across server accept loops, `MasterHttpClient`, and `EazyNode`.
+- Added 20s WebSocket `Ping` heartbeats (65s idle timeout) on both blind relay and client actors, atomic Ed25519-verified session reclaim on `/ws` reconnect (`session_replaced`), stateful `EazyNode` `auto_reconnect` (rolling back any un-ACKed `inflight` TX packet while preserving paired `DuplexCubeSession` keys), and scaled slow-VPN HTTP transfer timeouts (`30s`–`600s`; `300s` for downloads).
+
 ## v0.2.0 — Rust + CubeHash Rewrite
 
 ### Architecture & Performance

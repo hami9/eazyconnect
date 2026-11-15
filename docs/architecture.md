@@ -49,23 +49,24 @@ flowchart LR
 ### 2. `crates/eazyconnect-hw`
 - `keystore`: OS-sealed `DeviceIdentity` (`*.eazyconnect-id.json`), `seal_local_secret` / `unseal_local_secret`, TOFU peer public-key pins, TPM 2.0 CNG detection, and `MachineGuid` lookup binding into `OsBoundHardwareProvider`.
 - `peripherals`: USB enumeration via `nusb`, Windows HID enumeration via `SetupDiGetClassDevsW` + `HidD_*`, COM/Serial enumeration via `serialport`, `SerialTransport` trait (`OsSerialTransport` + `MemorySerialTransport`).
-- `system`: Host interface/VPN adapter inventory via Win32 `GetAdaptersAddresses`, admin elevation check (`IsUserAnAdmin`), and aggregated `SystemHardwareReport`.
+- `system`: Host interface/VPN adapter inventory via Win32 `GetAdaptersAddresses` (including IPv4 CIDR prefixes `ipv4_cidrs`, `classify_vpn_adapter`, `collect_lan_directed_broadcasts`, and `best_lan_ipv4`), admin elevation check (`IsUserAnAdmin`), and aggregated `SystemHardwareReport`.
 
 ### 3. `crates/eazyconnect-core`
-- `tls`: `ServerTlsConfig` (`SelfSigned`, `PemFiles`, `InsecureDisabled`), `ClientTlsConfig` (`WebPkiRoots`, `CaPem`, `PinnedCertSha256`), and URL parser `parse_endpoint_url`.
-- `discovery`: Signed UDP `37020` LAN discovery (`DISCOVER_EAZYCONNECT`) embedding URL/host/port/HTTPS flag, Master TLS SHA-256 pin, and `Ed25519` signature.
+- `tls`: `ServerTlsConfig` (`SelfSigned`, `LoadOrCreateSelfSigned`, `PemFiles`, `InsecureDisabled`), `ClientTlsConfig` (`WebPkiRoots`, `CaPem`, `PinnedCertSha256`), URL parser `parse_endpoint_url`, and shared TCP keepalive (`configure_tcp_keepalive` / `connect_tcp_keepalive` via `socket2`).
+- `discovery`: Signed UDP `37020` LAN & unicast discovery (`DISCOVER_EAZYCONNECT`) sending per-NIC LAN directed broadcasts past full-tunnel Exit VPNs, selecting peer-matched endpoints (`select_beacon_endpoints`), and signing `alternate_urls` with `Ed25519` (`eazyconnect-discover-v3`).
 - `protocol`: `RelayFrame` signaling/routing messages, 256-byte bucket-padded `EazyAppMessage` (`ChatText`, `FileShared`, `SerialData`, `SerialCommand`, `HardwareProbeRequest`, `HardwareProbeResponse`), canonical `Ed25519` signing transcripts, and `provision_duplex_from_ecdh`.
 - `envelope`: Client-side E2E vault envelopes (`EZV1`) and incremental `BLAKE3` folder delta scanning (`SyncManifest`, `scan_folder_delta`).
 - `config`: Persistent `ClientConfig` with DPAPI-sealed bearer token storage and bilingual (`en` / `fa`) `UserProfile`.
 
 ### 4. `crates/eazyconnect-server`
-- Serves HTTPS REST API and WSS `/ws` on the same port via `hyper` + `axum` + `tokio-rustls`.
-- Runs an optional background UDP `37020` discovery responder.
+- Serves HTTPS REST API and WSS `/ws` on the same port via `hyper` + `axum` + `tokio-rustls` with `TCP_NODELAY` and `SO_KEEPALIVE`.
+- Persists self-signed TLS certificates in `<data-dir>/tls/` across restarts (`LoadOrCreateSelfSigned`, optional `--regen-tls`) with multi-homed LAN + VPN SANs and optional `--lan-only` binding.
+- Runs an optional background UDP `37020` discovery responder and enforces 20s/65s WebSocket heartbeats plus verified `Ed25519` session reclaim on `/ws`.
 - `AuthStore` shares enrolled device Ed25519 TOFU pins across both HTTP challenge-verify enrollment and WebSocket `RegisterAuth` handshakes.
 
 ### 5. `crates/eazyconnect-client`
-- `MasterHttpClient` over `tokio-rustls` + `hyper` with enforced HTTPS/pin verification.
-- `EazyNode` managing non-blocking WSS transport, per-peer outbound `DeliveryAck` queuing, `X25519` pairing, E2E chat, and encrypted hardware serial bridge dispatch.
+- `MasterHttpClient` over `tokio-rustls` + `hyper` with enforced HTTPS/pin verification, TCP keepalive, 15s connect timeout, and scaled slow-link transfer timeouts.
+- `EazyNode` managing non-blocking WSS transport with 20s heartbeats, stateful `auto_reconnect` (rolling back un-ACKed `inflight` TX packets cleanly), per-peer outbound `DeliveryAck` queuing, `X25519` pairing, E2E chat, and encrypted hardware serial bridge dispatch.
 - `sync` folder delta uploader, `diag` host/network/LAN collector, and CLI binary `eazyconnect-client`.
 
 ## Master Server API Endpoints
