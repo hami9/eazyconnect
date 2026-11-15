@@ -311,6 +311,7 @@ async fn test_e2e_cubehash_chat_zero_oracle_and_epoch_hop_over_wss() {
             allow_insecure_ws: false,
             allow_remote_serial_os_fallback: false,
             allow_remote_hw_probe: false,
+            auto_reconnect: false,
         },
     )
     .await
@@ -325,6 +326,7 @@ async fn test_e2e_cubehash_chat_zero_oracle_and_epoch_hop_over_wss() {
             allow_insecure_ws: false,
             allow_remote_serial_os_fallback: false,
             allow_remote_hw_probe: false,
+            auto_reconnect: false,
         },
     )
     .await
@@ -460,6 +462,7 @@ async fn test_encrypted_serial_and_hardware_probe_bridge_e2e() {
             allow_insecure_ws: false,
             allow_remote_serial_os_fallback: false,
             allow_remote_hw_probe: true,
+            auto_reconnect: false,
         },
     )
     .await
@@ -476,6 +479,7 @@ async fn test_encrypted_serial_and_hardware_probe_bridge_e2e() {
             allow_insecure_ws: false,
             allow_remote_serial_os_fallback: false,
             allow_remote_hw_probe: false,
+            auto_reconnect: false,
         },
     )
     .await
@@ -548,4 +552,259 @@ async fn test_encrypted_serial_and_hardware_probe_bridge_e2e() {
     operator.shutdown().await;
     edge.shutdown().await;
     srv.abort();
+}
+
+#[tokio::test]
+async fn test_persistent_tls_pin_survives_server_restart() {
+    let dir = TempTestDir::new("ezc_e2e_tls_persist");
+    let cert_path = dir.0.join("server_data").join("tls").join("cert.pem");
+    let key_path = dir.0.join("server_data").join("tls").join("key.pem");
+
+    let srv1 = start_server(ServerConfig {
+        listen_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+        data_dir: dir.0.join("server_data"),
+        keystore_dir: Some(dir.0.join("server_ks")),
+        tls: ServerTlsConfig::LoadOrCreateSelfSigned {
+            cert_path: cert_path.clone(),
+            key_path: key_path.clone(),
+            san_hosts: vec!["localhost".to_string(), "127.0.0.1".to_string()],
+            force_regen: false,
+        },
+        discovery_addr: None,
+        advertised_host: Some("127.0.0.1".to_string()),
+        enrollment: EnrollmentPolicy::InviteCode("VPN-PIN-TEST".to_string()),
+        bootstrap_admin_pass: Some("AdminPass!2026".to_string()),
+    })
+    .await
+    .unwrap();
+    let pin1_hex = srv1.tls_cert_sha256_hex.clone().unwrap();
+    let pin1 = parse_sha256_pin_hex(&pin1_hex).unwrap();
+    srv1.abort();
+
+    // Restart on the same data_dir with LoadOrCreateSelfSigned: remote peers keep working with pin1.
+    let srv2 = start_server(ServerConfig {
+        listen_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+        data_dir: dir.0.join("server_data"),
+        keystore_dir: Some(dir.0.join("server_ks")),
+        tls: ServerTlsConfig::LoadOrCreateSelfSigned {
+            cert_path,
+            key_path,
+            san_hosts: vec!["localhost".to_string(), "127.0.0.1".to_string()],
+            force_regen: false,
+        },
+        discovery_addr: None,
+        advertised_host: Some("127.0.0.1".to_string()),
+        enrollment: EnrollmentPolicy::InviteCode("VPN-PIN-TEST".to_string()),
+        bootstrap_admin_pass: None,
+    })
+    .await
+    .unwrap();
+    assert_eq!(srv2.tls_cert_sha256_hex.as_deref(), Some(pin1_hex.as_str()));
+
+    let url2 = format!("https://{}", srv2.addr);
+    let client =
+        MasterHttpClient::new(&url2, ClientTlsConfig::PinnedCertSha256(pin1), false).unwrap();
+    let health = client.health().await.unwrap();
+    assert_eq!(health.status, "ok");
+
+    srv2.abort();
+}
+
+#[tokio::test]
+async fn test_relay_reclaim_and_auto_reconnect_preserve_cubehash_session() {
+    let dir = TempTestDir::new("ezc_e2e_reclaim");
+    let (srv, url, tls_cfg, _pin) =
+        boot_test_master(&dir, false, EnrollmentPolicy::OpenLan, None).await;
+
+    let alice_id =
+        DeviceIdentity::load_or_create("alice", Some(&dir.0.join("ks_alice")), None).unwrap();
+    let alice_reclaim_id =
+        DeviceIdentity::load_or_create("alice", Some(&dir.0.join("ks_alice")), None).unwrap();
+    let bob_id =
+        DeviceIdentity::load_or_create("bob", Some(&dir.0.join("ks_bob")), None).unwrap();
+
+    let http = MasterHttpClient::new(&url, tls_cfg.clone(), false).unwrap();
+    http.enroll_device(&alice_id, None).await.unwrap();
+    http.enroll_device(&bob_id, None).await.unwrap();
+
+    let alice = EazyNode::connect(
+        alice_id,
+        NodeConnectOptions {
+            ws_url: url.clone(),
+            tls_config: tls_cfg.clone(),
+            allow_insecure_ws: false,
+            allow_remote_serial_os_fallback: false,
+            allow_remote_hw_probe: false,
+            auto_reconnect: true,
+        },
+    )
+    .await
+    .unwrap();
+    let mut alice_ev = alice.subscribe();
+
+    let bob = EazyNode::connect(
+        bob_id,
+        NodeConnectOptions {
+            ws_url: url.clone(),
+            tls_config: tls_cfg.clone(),
+            allow_insecure_ws: false,
+            allow_remote_serial_os_fallback: false,
+            allow_remote_hw_probe: false,
+            auto_reconnect: false,
+        },
+    )
+    .await
+    .unwrap();
+    let mut bob_ev = bob.subscribe();
+
+    let psk = b"vpn-continuity-psk";
+    let pair_id = alice
+        .send_pair_offer("bob", EazyMeshProfile::Compact, psk)
+        .await
+        .unwrap();
+    let incoming_id = wait_event(&mut bob_ev, |e| match e {
+        NodeEvent::IncomingPairOffer { pair_id, from, .. } if from == "alice" => {
+            Some(pair_id.clone())
+        }
+        _ => None,
+    })
+    .await;
+    assert_eq!(incoming_id, pair_id);
+    bob.accept_pair_offer(&pair_id, psk).await.unwrap();
+    wait_event(&mut alice_ev, |e| match e {
+        NodeEvent::Paired { peer, .. } if peer == "bob" => Some(()),
+        _ => None,
+    })
+    .await;
+
+    alice
+        .send_app_message(
+            "bob",
+            EazyAppMessage::ChatText {
+                text: "before-vpn-drop".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+    let first_msg = wait_event(&mut bob_ev, |e| match e {
+        NodeEvent::MessageReceived {
+            from,
+            msg: EazyAppMessage::ChatText { text },
+            ..
+        } if from == "alice" => Some(text.clone()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(first_msg, "before-vpn-drop");
+
+    // Impostor with mismatched Ed25519 key must still be blocked from reclaiming "alice".
+    let impostor = DeviceIdentity::ephemeral_csprng("alice").unwrap();
+    let hijack = EazyNode::connect(
+        impostor,
+        NodeConnectOptions {
+            ws_url: url.clone(),
+            tls_config: tls_cfg.clone(),
+            allow_insecure_ws: false,
+            allow_remote_serial_os_fallback: false,
+            allow_remote_hw_probe: false,
+            auto_reconnect: false,
+        },
+    )
+    .await;
+    assert!(hijack.is_err());
+
+    // Verified same Ed25519 owner reclaims "alice" cleanly without `id_in_use`.
+    let alice_reclaimer = EazyNode::connect(
+        alice_reclaim_id,
+        NodeConnectOptions {
+            ws_url: url.clone(),
+            tls_config: tls_cfg.clone(),
+            allow_insecure_ws: false,
+            allow_remote_serial_os_fallback: false,
+            allow_remote_hw_probe: false,
+            auto_reconnect: false,
+        },
+    )
+    .await
+    .expect("same verified Ed25519 owner should reclaim active relay session");
+
+    wait_event(&mut alice_ev, |e| match e {
+        NodeEvent::Reconnecting { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+
+    // Step aside cleanly so `alice`'s auto-reconnect completes and preserves its paired CubeHash session.
+    alice_reclaimer.shutdown().await;
+    wait_event(&mut alice_ev, |e| match e {
+        NodeEvent::Reconnected => Some(()),
+        _ => None,
+    })
+    .await;
+
+    // Preserved DuplexCubeSession sends another encrypted message immediately without re-pairing!
+    alice
+        .send_app_message(
+            "bob",
+            EazyAppMessage::ChatText {
+                text: "after-vpn-roam".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+    let post_msg = wait_event(&mut bob_ev, |e| match e {
+        NodeEvent::MessageReceived {
+            from,
+            msg: EazyAppMessage::ChatText { text },
+            ..
+        } if from == "alice" => Some(text.clone()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(post_msg, "after-vpn-roam");
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+    srv.abort();
+}
+
+#[test]
+fn test_discovery_beacon_alternate_urls_signed_and_tamper_rejected() {
+    let dir = TempTestDir::new("ezc_beacon_alts");
+    let master = DeviceIdentity::load_or_create("master", Some(&dir.0), None).unwrap();
+    let pub_key = master.ed25519_pub();
+    let alts = vec![
+        "https://192.168.1.50:8000".to_string(),
+        "https://100.64.0.10:8000".to_string(),
+    ];
+    let sign_msg = eazyconnect_core::discovery_beacon_sign_bytes(
+        "eazyconnect/0.2",
+        "10.8.0.1",
+        8000,
+        true,
+        Some("abcd"),
+        &pub_key,
+        &alts,
+    );
+    let sig = master.sign(&sign_msg);
+    assert!(DeviceIdentity::verify_signature(&pub_key, &sign_msg, &sig));
+
+    let tampered_alts = vec![
+        "https://192.168.1.50:8000".to_string(),
+        "https://evil.invalid:8000".to_string(),
+    ];
+    let tampered_msg = eazyconnect_core::discovery_beacon_sign_bytes(
+        "eazyconnect/0.2",
+        "10.8.0.1",
+        8000,
+        true,
+        Some("abcd"),
+        &pub_key,
+        &tampered_alts,
+    );
+    assert!(!DeviceIdentity::verify_signature(
+        &pub_key,
+        &tampered_msg,
+        &sig
+    ));
 }

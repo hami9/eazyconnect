@@ -2,10 +2,10 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use eazyconnect_core::{
-    http_auth_sign_bytes, parse_endpoint_url, AuthChallengeResponse, AuthTokenResponse,
-    ClientTlsConfig, CreateUserRequest, DeviceAuthRequest, DeviceRecordView, HealthResponse,
-    ListFilesResponse, ParsedEndpoint, PasswordLoginRequest, RelayTelemetrySnapshot,
-    ServerFileEntry,
+    connect_tcp_keepalive, http_auth_sign_bytes, parse_endpoint_url, AuthChallengeResponse,
+    AuthTokenResponse, ClientTlsConfig, CreateUserRequest, DeviceAuthRequest, DeviceRecordView,
+    HealthResponse, ListFilesResponse, ParsedEndpoint, PasswordLoginRequest,
+    RelayTelemetrySnapshot, ServerFileEntry,
 };
 use eazyconnect_hw::DeviceIdentity;
 use http_body_util::{BodyExt, Full};
@@ -13,9 +13,16 @@ use hyper::header::{AUTHORIZATION, CONNECTION, CONTENT_TYPE, HOST};
 use hyper::{HeaderMap, Method, Request};
 use hyper_util::rt::TokioIo;
 use serde::de::DeserializeOwned;
-use tokio::net::TcpStream;
 
-const HTTP_TIMEOUT: Duration = Duration::from_secs(15);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+
+fn transfer_timeout(method: &Method, path_and_query: &str, body_len: usize) -> Duration {
+    if *method == Method::GET && path_and_query.starts_with("/api/v1/files/download/") {
+        return Duration::from_secs(300);
+    }
+    let secs = 30u64.saturating_add((body_len as u64) / (64 * 1024));
+    Duration::from_secs(secs.min(600))
+}
 
 #[derive(Clone)]
 pub struct MasterHttpClient {
@@ -246,7 +253,10 @@ impl MasterHttpClient {
         content_type: Option<&str>,
         body: Vec<u8>,
     ) -> Result<(u16, HeaderMap, Vec<u8>), String> {
-        tokio::time::timeout(HTTP_TIMEOUT, async {
+        let timeout = transfer_timeout(&method, path_and_query, body.len());
+        let tcp = connect_tcp_keepalive(&self.endpoint.tcp_addr, CONNECT_TIMEOUT).await?;
+
+        tokio::time::timeout(timeout, async {
             let full_path = if self.endpoint.base_path.is_empty() {
                 path_and_query.to_string()
             } else {
@@ -269,10 +279,6 @@ impl MasterHttpClient {
                 .body(Full::new(Bytes::from(body)))
                 .map_err(|e| format!("failed to build HTTP request: {e}"))?;
 
-            let tcp = TcpStream::connect(&self.endpoint.tcp_addr)
-                .await
-                .map_err(|e| format!("TCP connect {} failed: {e}", self.endpoint.tcp_addr))?;
-
             let (status, headers, resp_bytes) = if self.endpoint.is_tls {
                 let connector = self.tls_config.build_connector()?;
                 let tls = connector
@@ -289,7 +295,7 @@ impl MasterHttpClient {
             Ok((status, headers, resp_bytes))
         })
         .await
-        .map_err(|_| format!("HTTP request to '{}' timed out", self.endpoint.full_url))?
+        .map_err(|_| format!("HTTP request to '{}' timed out after {}s", self.endpoint.full_url, timeout.as_secs()))?
     }
 }
 

@@ -12,9 +12,9 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use eazyconnect_core::{
-    spawn_discovery_responder, AuthTokenResponse, BuiltServerTls, CreateUserRequest,
-    DeviceAuthRequest, HealthResponse, ListFilesResponse, PasswordLoginRequest, ServerFileEntry,
-    ServerTlsConfig,
+    configure_tcp_keepalive, spawn_discovery_responder, AuthTokenResponse, BuiltServerTls,
+    CreateUserRequest, DeviceAuthRequest, HealthResponse, ListFilesResponse, PasswordLoginRequest,
+    ServerFileEntry, ServerTlsConfig,
 };
 use eazyconnect_hw::{validate_id, DeviceIdentity};
 use hyper::body::Incoming;
@@ -159,6 +159,7 @@ pub async fn start_server(cfg: ServerConfig) -> Result<StartedServer, String> {
             let Ok((stream, _peer)) = listener.accept().await else {
                 break;
             };
+            configure_tcp_keepalive(&stream);
             let app_clone = app.clone();
             let acceptor_clone = acceptor.clone();
 

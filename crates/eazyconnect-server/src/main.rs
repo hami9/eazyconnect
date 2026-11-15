@@ -3,7 +3,11 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::process::Command;
 
-use eazyconnect_core::{detect_local_ipv4, ServerTlsConfig, DEFAULT_DISCOVERY_PORT};
+use eazyconnect_core::{ServerTlsConfig, DEFAULT_DISCOVERY_PORT};
+use eazyconnect_hw::{
+    best_lan_ipv4, collect_lan_and_vpn_ipv4s_from, collect_local_endpoint_ips,
+    detect_network_adapters,
+};
 use eazyconnect_server::{start_server, EnrollmentPolicy, ServerConfig};
 
 #[tokio::main]
@@ -31,10 +35,13 @@ async fn run_cli(args: &[String]) -> Result<(), String> {
     };
 
     let mut listen_addr: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 8000);
+    let mut listen_explicit = false;
+    let mut lan_only = false;
     let mut data_dir: PathBuf = default_server_data_dir();
     let mut keystore_dir: Option<PathBuf> = None;
     let mut tls_cert: Option<PathBuf> = None;
     let mut tls_key: Option<PathBuf> = None;
+    let mut regen_tls = false;
     let mut insecure_http = false;
     let mut discovery_port: Option<u16> = Some(DEFAULT_DISCOVERY_PORT);
     let mut advertised_host: Option<String> = None;
@@ -50,6 +57,13 @@ async fn run_cli(args: &[String]) -> Result<(), String> {
                 listen_addr = v
                     .parse()
                     .map_err(|e| format!("invalid --listen '{v}': {e}"))?;
+                listen_explicit = true;
+            }
+            "--lan-only" => {
+                lan_only = true;
+            }
+            "--regen-tls" => {
+                regen_tls = true;
             }
             "--data-dir" => {
                 i += 1;
@@ -109,6 +123,15 @@ async fn run_cli(args: &[String]) -> Result<(), String> {
         i += 1;
     }
 
+    if lan_only && !listen_explicit {
+        let lan_ip = best_lan_ipv4()
+            .ok_or_else(|| "no active non-VPN LAN IPv4 adapter found for --lan-only".to_string())?;
+        let parsed_ip: IpAddr = lan_ip
+            .parse()
+            .map_err(|e| format!("invalid detected LAN IP '{lan_ip}': {e}"))?;
+        listen_addr = SocketAddr::new(parsed_ip, listen_addr.port());
+    }
+
     let tls = if insecure_http {
         ServerTlsConfig::InsecureDisabled
     } else if let (Some(cert_path), Some(key_path)) = (tls_cert, tls_key) {
@@ -119,12 +142,28 @@ async fn run_cli(args: &[String]) -> Result<(), String> {
         let mut san_hosts = vec![
             "localhost".to_string(),
             "127.0.0.1".to_string(),
-            detect_local_ipv4(),
+            "::1".to_string(),
         ];
+        if !listen_addr.ip().is_unspecified() {
+            san_hosts.push(listen_addr.ip().to_string());
+        }
+        if lan_only {
+            if let Some(lan_ip) = best_lan_ipv4() {
+                san_hosts.push(lan_ip);
+            }
+        } else {
+            san_hosts.extend(collect_local_endpoint_ips());
+        }
         if let Some(ref h) = advertised_host {
             san_hosts.push(h.clone());
         }
-        ServerTlsConfig::SelfSigned { san_hosts }
+        let tls_dir = data_dir.join("tls");
+        ServerTlsConfig::LoadOrCreateSelfSigned {
+            cert_path: tls_dir.join("cert.pem"),
+            key_path: tls_dir.join("key.pem"),
+            san_hosts,
+            force_regen: regen_tls,
+        }
     };
 
     let discovery_addr =
@@ -133,6 +172,7 @@ async fn run_cli(args: &[String]) -> Result<(), String> {
         Some(c) => EnrollmentPolicy::InviteCode(c),
         None => EnrollmentPolicy::OpenLan,
     };
+    let open_lan = matches!(enrollment, EnrollmentPolicy::OpenLan);
 
     let started = start_server(ServerConfig {
         listen_addr,
@@ -146,6 +186,20 @@ async fn run_cli(args: &[String]) -> Result<(), String> {
     })
     .await?;
 
+    let adapters = detect_network_adapters().unwrap_or_default();
+    let (lan_ips, vpn_ips) = collect_lan_and_vpn_ipv4s_from(&adapters);
+    let active_vpns: Vec<String> = adapters
+        .iter()
+        .filter(|a| a.is_up && a.is_vpn_like)
+        .map(|a| {
+            if a.ipv4_addrs.is_empty() {
+                a.name.clone()
+            } else {
+                format!("{} ({})", a.name, a.ipv4_addrs.join(", "))
+            }
+        })
+        .collect();
+
     let scheme = if started.is_tls { "https" } else { "http" };
     println!(
         "EazyConnect Master Server listening on {scheme}://{}",
@@ -156,11 +210,23 @@ async fn run_cli(args: &[String]) -> Result<(), String> {
     if let Some(pin) = &started.tls_cert_sha256_hex {
         println!("  TLS SHA-256 Pin: {pin}");
     }
+    if !lan_ips.is_empty() {
+        println!("  LAN Endpoints  : {}", lan_ips.join(", "));
+    }
+    if !vpn_ips.is_empty() {
+        println!("  VPN Endpoints  : {}", vpn_ips.join(", "));
+    }
     if let Some(d_addr) = started.discovery_addr {
         println!("  UDP Discovery  : {d_addr}");
     }
     if !started.is_tls {
         eprintln!("WARNING: running in insecure HTTP mode (--insecure-http)");
+    }
+    if !active_vpns.is_empty() && open_lan && !lan_only {
+        eprintln!(
+            "WARNING: active VPN adapter(s) [{}] with OpenLan enrollment! Pass --invite-code <code> or --lan-only to prevent unauthorized remote tunnel enrollments.",
+            active_vpns.join("; ")
+        );
     }
 
     tokio::signal::ctrl_c()
@@ -261,6 +327,8 @@ fn print_help() {
          \t--keystore-dir <dir>      OS-sealed keystore directory\n\
          \t--tls-cert <pem>          Server TLS certificate PEM\n\
          \t--tls-key <pem>           Server TLS private key PEM\n\
+         \t--regen-tls               Force-regenerate persisted self-signed TLS cert & key\n\
+         \t--lan-only                Bind strictly to primary non-VPN LAN IP when --listen is omitted\n\
          \t--insecure-http           Disable TLS (testing only)\n\
          \t--discovery-port <u16>    UDP discovery port (default 37020, 0 disables)\n\
          \t--no-discovery            Disable UDP discovery responder\n\
