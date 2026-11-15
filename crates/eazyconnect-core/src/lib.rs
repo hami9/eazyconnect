@@ -9,8 +9,8 @@ pub use config::{
     UserProfile,
 };
 pub use discovery::{
-    detect_local_ipv4, discover_masters, spawn_discovery_responder, DiscoveredMaster,
-    DEFAULT_DISCOVERY_PORT, DISCOVERY_MAGIC,
+    detect_local_ipv4, discover_masters, select_beacon_endpoints, spawn_discovery_responder,
+    DiscoveredMaster, DEFAULT_DISCOVERY_PORT, DISCOVERY_MAGIC,
 };
 pub use envelope::{
     decrypt_file_from_vault, encrypt_file_for_vault, scan_folder_delta, PendingSyncFile,
@@ -26,6 +26,6 @@ pub use protocol::{
     RelayTelemetrySnapshot, RelayTrafficEvent, ServerFileEntry,
 };
 pub use tls::{
-    parse_endpoint_url, parse_sha256_pin_hex, BuiltServerTls, ClientTlsConfig, ParsedEndpoint,
-    ServerTlsConfig,
+    configure_tcp_keepalive, connect_tcp_keepalive, parse_endpoint_url, parse_sha256_pin_hex,
+    BuiltServerTls, ClientTlsConfig, ParsedEndpoint, ServerTlsConfig,
 };

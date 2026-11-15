@@ -263,6 +263,8 @@ pub struct DiscoveryBeacon {
     pub https: bool,
     pub tls_cert_sha256_hex: Option<String>,
     pub master_ed25519_pub: [u8; 32],
+    #[serde(default)]
+    pub alternate_urls: Vec<String>,
     #[serde(with = "sig64_serde")]
     pub signature: [u8; 64],
 }
@@ -298,15 +300,20 @@ pub fn discovery_beacon_sign_bytes(
     https: bool,
     tls_cert_sha256_hex: Option<&str>,
     master_ed25519_pub: &[u8; 32],
+    alternate_urls: &[String],
 ) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(128);
-    buf.extend_from_slice(b"eazyconnect-discover-v2");
+    let mut buf = Vec::with_capacity(160);
+    buf.extend_from_slice(b"eazyconnect-discover-v3");
     push_lp_bytes(&mut buf, version.as_bytes());
     push_lp_bytes(&mut buf, host.as_bytes());
     buf.extend_from_slice(&port.to_le_bytes());
     buf.push(u8::from(https));
     push_lp_bytes(&mut buf, tls_cert_sha256_hex.unwrap_or("").as_bytes());
     buf.extend_from_slice(master_ed25519_pub);
+    buf.extend_from_slice(&(alternate_urls.len() as u32).to_le_bytes());
+    for alt in alternate_urls {
+        push_lp_bytes(&mut buf, alt.as_bytes());
+    }
     buf
 }
 
