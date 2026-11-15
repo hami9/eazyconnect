@@ -1,0 +1,29 @@
+[package]
+name = "eazyconnect-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Protocol, TLS pinning, LAN discovery, CubeHash E2E envelope encryption, and delta sync for EazyConnect"
+
+[dependencies]
+blake3.workspace = true
+chacha20poly1305.workspace = true
+cubehash-core = { path = "../cubehash-core" }
+eazyconnect-hw = { path = "../eazyconnect-hw" }
+ed25519-dalek.workspace = true
+getrandom.workspace = true
+hex.workspace = true
+rcgen.workspace = true
+rustls.workspace = true
+rustls-pemfile.workspace = true
+rustls-pki-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+tokio.workspace = true
+tokio-rustls.workspace = true
+webpki-roots.workspace = true
+x25519-dalek.workspace = true
+zeroize.workspace = true
