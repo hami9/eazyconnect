@@ -22,7 +22,7 @@ EazyConnect is a high-speed, headless LAN synchronization, zero-knowledge peer m
 | `crates/eazyconnect-core` | Wire protocol (`RelayFrame`, 256-byte bucket-padded `EazyAppMessage`), Ed25519-signed UDP `37020` LAN discovery beacons, TLS 1.3 CA / SHA-256 pinning, `EZV1` E2E file vault envelopes, and `BLAKE3` delta manifest |
 | `crates/eazyconnect-server` | Headless HTTPS + WSS Master Server, Argon2id user auth, Ed25519 TOFU device enrollment + invite gate, `BLAKE3` file storage host, zero-knowledge blind `/ws` relay, UDP discovery responder, and Windows startup task helper |
 | `crates/eazyconnect-client` | Headless CLI client, E2E file vault & incremental folder sync, CubeHash E2E terminal `chat`, COM/USB/HID inspection & encrypted serial bridging, diagnostics, and Windows logon task helper |
-| `crates/eazyconnect-ui` | Native dark-mode Rust desktop Control Center (`eframe`/`egui` + native file pickers) for UDP discovery, enrollment, E2E file sync, live CubeHash chat, hardware/serial console, diagnostics, and user profile editing |
+| `crates/eazyconnect-ui` | Native Discord-style Rust desktop chat UI (`eframe`/`egui`) with automatic server discovery, automatic TLS pinning & DPAPI enrollment, automatic E2E peer pairing, user profile popout, and Account / Theme / Connection settings |
 | `installer/` | Graphical Fluent WPF prerequisite & deployment wizard ([EazyConnect-Setup.ps1](installer/EazyConnect-Setup.ps1), [Setup-EazyConnect.bat](Setup-EazyConnect.bat)) + Inno Setup 6 packager ([eazyconnect.iss](installer/eazyconnect.iss)) |
 
 ## Build & Verify
