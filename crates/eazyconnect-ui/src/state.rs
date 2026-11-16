@@ -28,21 +28,90 @@ pub enum ConnectionState {
     Reconnecting { attempt: u32 },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
+pub struct FileAttachment {
+    pub filename: String,
+    pub size_bytes: u64,
+    pub bytes: Vec<u8>,
+    pub preview: Option<TextureHandle>,
+}
+
+#[derive(Clone)]
 pub struct ChatMessage {
     pub sender: String,
     pub text: String,
     pub timestamp: String,
     pub outgoing: bool,
+    pub attachment: Option<FileAttachment>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Default)]
 pub struct PeerConversation {
     pub messages: Vec<ChatMessage>,
     pub paired: bool,
     pub pairing_in_flight: bool,
     pub safety_code: Option<String>,
     pub unread: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct TransferProgress {
+    pub filename: String,
+    pub completed: u32,
+    pub total: u32,
+    pub outgoing: bool,
+}
+
+/// Responsive layout breakpoints computed dynamically from current viewport width.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LayoutMetrics {
+    pub is_narrow: bool,
+    pub is_compact: bool,
+    pub rail_width: f32,
+    pub sidebar_width: f32,
+}
+
+pub fn compute_layout_metrics(viewport_width: f32) -> LayoutMetrics {
+    if viewport_width < 660.0 {
+        LayoutMetrics {
+            is_narrow: true,
+            is_compact: true,
+            rail_width: 54.0,
+            sidebar_width: (viewport_width - 54.0).max(200.0),
+        }
+    } else if viewport_width < 880.0 {
+        LayoutMetrics {
+            is_narrow: false,
+            is_compact: true,
+            rail_width: 58.0,
+            sidebar_width: (viewport_width * 0.27).clamp(190.0, 224.0),
+        }
+    } else {
+        LayoutMetrics {
+            is_narrow: false,
+            is_compact: false,
+            rail_width: 68.0,
+            sidebar_width: (viewport_width * 0.24).clamp(230.0, 272.0),
+        }
+    }
+}
+
+pub fn format_bytes(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    let b = bytes as f64;
+    if b >= MB {
+        format!("{:.2} MiB", b / MB)
+    } else if b >= KB {
+        format!("{:.1} KiB", b / KB)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+pub enum OutgoingWork {
+    Text(String),
+    File { filename: String, bytes: Vec<u8> },
 }
 
 #[derive(Debug)]
@@ -64,6 +133,16 @@ pub enum UiEvent {
         master_url: String,
     },
     UserCreated(String),
+    FileTransferProgress {
+        filename: String,
+        completed: u32,
+        total: u32,
+    },
+    FileTransferSent {
+        peer: String,
+        filename: String,
+        bytes: Vec<u8>,
+    },
     Notice {
         msg: String,
         is_error: bool,
@@ -111,10 +190,7 @@ pub fn normalize_server_url(raw: &str, insecure_http: bool) -> String {
 
 /// Builds a unicast UDP 37020 probe address if `url` points to a direct IPv4 host.
 pub fn discovery_target_for_server(url: &str) -> Option<SocketAddr> {
-    let rest = url
-        .split_once("://")
-        .map(|(_, r)| r)
-        .unwrap_or(url);
+    let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
     let authority = rest.split('/').next()?;
     let host = if let Some(stripped) = authority.strip_prefix('[') {
         stripped.split(']').next()?
@@ -151,12 +227,12 @@ pub fn initials_for(name: &str) -> String {
 
 pub fn avatar_color_for(id: &str) -> Color32 {
     const PALETTE: &[Color32] = &[
-        Color32::from_rgb(88, 101, 242),  // Blurple
-        Color32::from_rgb(35, 165, 90),   // Green
-        Color32::from_rgb(235, 69, 158),  // Fuchsia
-        Color32::from_rgb(240, 178, 50),  // Gold
-        Color32::from_rgb(0, 168, 252),   // Cyan
-        Color32::from_rgb(230, 126, 34),  // Orange
+        Color32::from_rgb(88, 101, 242),
+        Color32::from_rgb(35, 165, 90),
+        Color32::from_rgb(235, 69, 158),
+        Color32::from_rgb(240, 178, 50),
+        Color32::from_rgb(0, 168, 252),
+        Color32::from_rgb(230, 126, 34),
     ];
     let hash = id
         .bytes()
@@ -195,7 +271,6 @@ pub fn paint_avatar(
             Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0)),
             Color32::WHITE,
         );
-        // Circular mask edge ring blends rectangular thumbnails neatly into the Discord chrome.
         painter.circle_stroke(center, radius, Stroke::new(2.0, ring_bg));
     } else {
         painter.circle_filled(center, radius, avatar_color_for(id_seed));
@@ -224,7 +299,12 @@ pub fn paint_avatar(
 
 pub fn status_pill(ui: &mut egui::Ui, pal: &ThemePalette, label: &str, color: Color32) {
     egui::Frame::new()
-        .fill(Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 28))
+        .fill(Color32::from_rgba_unmultiplied(
+            color.r(),
+            color.g(),
+            color.b(),
+            28,
+        ))
         .stroke(Stroke::new(1.0, color))
         .corner_radius(egui::CornerRadius::same(10))
         .inner_margin(egui::Margin::symmetric(8, 3))
@@ -274,5 +354,21 @@ mod tests {
         assert_eq!(initials_for("Alice Bob"), "AB");
         assert_eq!(initials_for("hami"), "HA");
         assert_eq!(initials_for("x"), "X");
+    }
+
+    #[test]
+    fn test_responsive_layout_metrics_adapt_to_width() {
+        let narrow = compute_layout_metrics(520.0);
+        assert!(narrow.is_narrow);
+        assert!(narrow.is_compact);
+
+        let compact = compute_layout_metrics(760.0);
+        assert!(!compact.is_narrow);
+        assert!(compact.is_compact);
+
+        let desktop = compute_layout_metrics(1200.0);
+        assert!(!desktop.is_narrow);
+        assert!(!desktop.is_compact);
+        assert_eq!(desktop.rail_width, 68.0);
     }
 }
