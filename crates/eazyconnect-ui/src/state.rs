@@ -1,186 +1,241 @@
-use std::collections::BTreeMap;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-use eazyconnect_client::{DiagnosticReport, NodeEvent, SyncRunSummary};
-use eazyconnect_core::{
-    DiscoveredMaster, EazyMeshProfile, HealthResponse, PeerIdentity, ServerFileEntry,
-};
+use eazyconnect_client::NodeEvent;
+use eazyconnect_core::{DiscoveredMaster, PeerIdentity, DEFAULT_DISCOVERY_PORT};
 use eazyconnect_hw::SystemHardwareReport;
-use egui::{Color32, CornerRadius, Frame, Margin, RichText, Stroke};
+use egui::{Color32, Pos2, Rect, Sense, Stroke, TextureHandle, Vec2};
 
-pub const BG_CANVAS: Color32 = Color32::from_rgb(13, 18, 30);
-pub const BG_PANEL: Color32 = Color32::from_rgb(18, 25, 41);
-pub const BG_CARD: Color32 = Color32::from_rgb(24, 33, 53);
-pub const BG_INPUT: Color32 = Color32::from_rgb(15, 21, 36);
-pub const BORDER_SUBTLE: Color32 = Color32::from_rgb(45, 59, 89);
-
-pub const ACCENT_CYAN: Color32 = Color32::from_rgb(56, 189, 248);
-pub const ACCENT_EMERALD: Color32 = Color32::from_rgb(16, 185, 129);
-pub const ACCENT_AMBER: Color32 = Color32::from_rgb(245, 158, 11);
-pub const ACCENT_ROSE: Color32 = Color32::from_rgb(244, 63, 94);
-pub const TEXT_PRIMARY: Color32 = Color32::from_rgb(241, 245, 249);
-pub const TEXT_MUTED: Color32 = Color32::from_rgb(148, 163, 184);
+use crate::theme::ThemePalette;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ActiveTab {
-    Connect,
-    Files,
+pub enum AppScreen {
+    Onboarding,
     Chat,
-    Hardware,
-    Diagnostics,
-    Profile,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsSection {
+    Account,
+    Theme,
+    Connection,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RelayStatus {
+pub enum ConnectionState {
     Disconnected,
     Connecting,
     Online,
-    Reconnecting { attempt: u32, reason: String },
+    Reconnecting { attempt: u32 },
 }
 
 #[derive(Debug, Clone)]
-pub struct PendingOffer {
-    pub pair_id: String,
-    pub from: String,
-    pub profile: EazyMeshProfile,
-    pub has_psk: bool,
+pub struct ChatMessage {
+    pub sender: String,
+    pub text: String,
+    pub timestamp: String,
+    pub outgoing: bool,
 }
 
-#[derive(Debug, Clone)]
-pub struct PairedPeerInfo {
-    pub safety_fingerprint: String,
-    pub epoch: u64,
-}
-
-#[derive(Debug, Clone)]
-pub struct ChatLine {
-    pub badge: String,
-    pub badge_color: Color32,
-    pub body: String,
+#[derive(Debug, Clone, Default)]
+pub struct PeerConversation {
+    pub messages: Vec<ChatMessage>,
+    pub paired: bool,
+    pub pairing_in_flight: bool,
+    pub safety_code: Option<String>,
+    pub unread: u32,
 }
 
 #[derive(Debug)]
 pub enum UiEvent {
-    DiscoveryDone(Result<Vec<DiscoveredMaster>, String>),
-    HealthDone(Result<HealthResponse, String>),
-    EnrollDone {
-        client_id: String,
-        role: String,
-        token: String,
+    DiscoveryDone(Vec<DiscoveredMaster>),
+    HardwareChecked(SystemHardwareReport),
+    AutoConnectOk {
         master_url: String,
         tls_pin_hex: Option<String>,
+        client_id: String,
+        token: Option<(String, String)>,
+        peers: Vec<PeerIdentity>,
     },
-    LoginDone {
+    AutoConnectFailed(String),
+    LoginOk {
         username: String,
         role: String,
         token: String,
         master_url: String,
     },
     UserCreated(String),
-    ActionError(String),
-    UploadDone(ServerFileEntry),
-    SyncDone(SyncRunSummary),
-    FilesListed {
-        owner: String,
-        files: Vec<ServerFileEntry>,
+    Notice {
+        msg: String,
+        is_error: bool,
     },
-    DownloadDone {
-        remote: String,
-        dest: String,
-        bytes: usize,
-        e2e: bool,
-    },
-    DeleteDone(String),
-    HardwareDone(SystemHardwareReport),
-    SerialDone(Result<Vec<u8>, String>),
-    DiagDone(Result<(DiagnosticReport, Option<String>), String>),
-    RelayConnected(Vec<PeerIdentity>),
-    RelayConnectFailed(String),
-    RelayNodeEvent(NodeEvent),
-    RelayInfo(String),
-    RelayStopped,
+    NodeEvent(NodeEvent),
+    DisconnectedCleanly,
 }
 
-pub fn card_frame() -> Frame {
-    Frame::new()
-        .fill(BG_CARD)
-        .stroke(Stroke::new(1.0, BORDER_SUBTLE))
-        .corner_radius(CornerRadius::same(10))
-        .inner_margin(Margin::same(14))
-}
-
-pub fn section_heading(ui: &mut egui::Ui, title: &str, subtitle: &str) {
-    ui.label(
-        RichText::new(title)
-            .size(16.0)
-            .strong()
-            .color(TEXT_PRIMARY),
-    );
-    if !subtitle.is_empty() {
-        ui.label(RichText::new(subtitle).size(12.0).color(TEXT_MUTED));
+/// Normalizes user-entered server addresses (`192.168.1.10`, `192.168.1.10:8000`, `https://...`).
+pub fn normalize_server_url(raw: &str, insecure_http: bool) -> String {
+    let trimmed = raw.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return String::new();
     }
-    ui.add_space(6.0);
-}
-
-pub fn status_pill(ui: &mut egui::Ui, label: &str, color: Color32) {
-    Frame::new()
-        .fill(Color32::from_rgba_unmultiplied(
-            color.r(),
-            color.g(),
-            color.b(),
-            28,
-        ))
-        .stroke(Stroke::new(1.0, color))
-        .corner_radius(CornerRadius::same(6))
-        .inner_margin(Margin::symmetric(8, 3))
-        .show(ui, |ui| {
-            ui.label(RichText::new(label).size(11.5).strong().color(color));
-        });
-}
-
-pub fn format_bytes(bytes: u64) -> String {
-    const KB: f64 = 1024.0;
-    const MB: f64 = KB * 1024.0;
-    const GB: f64 = MB * 1024.0;
-    let b = bytes as f64;
-    if b >= GB {
-        format!("{:.2} GiB", b / GB)
-    } else if b >= MB {
-        format!("{:.2} MiB", b / MB)
-    } else if b >= KB {
-        format!("{:.1} KiB", b / KB)
+    let has_scheme = trimmed.starts_with("https://")
+        || trimmed.starts_with("http://")
+        || trimmed.starts_with("wss://")
+        || trimmed.starts_with("ws://");
+    let with_scheme = if has_scheme {
+        trimmed
+            .replacen("wss://", "https://", 1)
+            .replacen("ws://", "http://", 1)
+    } else if insecure_http {
+        format!("http://{trimmed}")
     } else {
-        format!("{bytes} B")
+        format!("https://{trimmed}")
+    };
+
+    if let Some((scheme, rest)) = with_scheme.split_once("://") {
+        let authority = rest.split('/').next().unwrap_or(rest);
+        let has_port = if let Some(idx) = authority.rfind(']') {
+            authority[idx..].contains(':')
+        } else {
+            authority.contains(':')
+        };
+        if has_port {
+            with_scheme
+        } else {
+            format!("{scheme}://{authority}:8000")
+        }
+    } else {
+        with_scheme
     }
 }
 
-/// Applies a selected discovered master onto mutable connection strings (URL + SHA-256 pin).
-pub fn apply_discovered_master(
-    master: &DiscoveredMaster,
-    selected_url: &str,
-    master_url: &mut String,
-    tls_pin_hex: &mut String,
-    insecure_http: &mut bool,
-) {
-    *master_url = selected_url.to_string();
-    *insecure_http = !master.https;
-    if let Some(ref pin) = master.tls_cert_sha256_hex {
-        *tls_pin_hex = pin.clone();
+/// Builds a unicast UDP 37020 probe address if `url` points to a direct IPv4 host.
+pub fn discovery_target_for_server(url: &str) -> Option<SocketAddr> {
+    let rest = url
+        .split_once("://")
+        .map(|(_, r)| r)
+        .unwrap_or(url);
+    let authority = rest.split('/').next()?;
+    let host = if let Some(stripped) = authority.strip_prefix('[') {
+        stripped.split(']').next()?
+    } else {
+        authority.split(':').next()?
+    };
+    let ip: IpAddr = host.parse().ok()?;
+    Some(SocketAddr::new(ip, DEFAULT_DISCOVERY_PORT))
+}
+
+pub fn broadcast_discovery_target() -> SocketAddr {
+    SocketAddr::new(IpAddr::V4(Ipv4Addr::BROADCAST), DEFAULT_DISCOVERY_PORT)
+}
+
+pub fn initials_for(name: &str) -> String {
+    let parts: Vec<&str> = name
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if parts.len() >= 2 {
+        let a = parts[0].chars().next().unwrap_or('?');
+        let b = parts[1].chars().next().unwrap_or('?');
+        format!("{}{}", a.to_ascii_uppercase(), b.to_ascii_uppercase())
+    } else {
+        let mut chars = name.chars().filter(|c| c.is_alphanumeric());
+        let a = chars.next().unwrap_or('?').to_ascii_uppercase();
+        let b = chars.next().map(|c| c.to_ascii_uppercase());
+        match b {
+            Some(c) => format!("{a}{c}"),
+            None => a.to_string(),
+        }
     }
 }
 
-pub fn profile_label(profile: EazyMeshProfile) -> &'static str {
-    match profile {
-        EazyMeshProfile::Standard => "Standard (100 cubes)",
-        EazyMeshProfile::Compact => "Compact (40 cubes)",
-        EazyMeshProfile::HighCapacity => "HighCapacity (160 cubes)",
-    }
+pub fn avatar_color_for(id: &str) -> Color32 {
+    const PALETTE: &[Color32] = &[
+        Color32::from_rgb(88, 101, 242),  // Blurple
+        Color32::from_rgb(35, 165, 90),   // Green
+        Color32::from_rgb(235, 69, 158),  // Fuchsia
+        Color32::from_rgb(240, 178, 50),  // Gold
+        Color32::from_rgb(0, 168, 252),   // Cyan
+        Color32::from_rgb(230, 126, 34),  // Orange
+    ];
+    let hash = id
+        .bytes()
+        .fold(0usize, |acc, b| acc.wrapping_mul(31).wrapping_add(usize::from(b)));
+    PALETTE[hash % PALETTE.len()]
 }
 
-pub fn sort_paired_label(paired: &BTreeMap<String, PairedPeerInfo>, peer: &str) -> Option<String> {
-    paired
-        .get(peer)
-        .map(|p| format!("{} @e{}", p.safety_fingerprint, p.epoch))
+pub fn format_time_now() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let mins_today = (secs / 60) % (24 * 60);
+    format!("{:02}:{:02}", mins_today / 60, mins_today % 60)
+}
+
+/// Draws a circular Discord-style avatar with optional image texture and bottom-right status dot.
+pub fn paint_avatar(
+    ui: &mut egui::Ui,
+    size: f32,
+    id_seed: &str,
+    display_name: &str,
+    status_dot: Option<Color32>,
+    ring_bg: Color32,
+    tex: Option<&TextureHandle>,
+) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
+    let painter = ui.painter();
+    let center = rect.center();
+    let radius = size * 0.5;
+
+    if let Some(handle) = tex {
+        painter.image(
+            handle.id(),
+            rect,
+            Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0)),
+            Color32::WHITE,
+        );
+        // Circular mask edge ring blends rectangular thumbnails neatly into the Discord chrome.
+        painter.circle_stroke(center, radius, Stroke::new(2.0, ring_bg));
+    } else {
+        painter.circle_filled(center, radius, avatar_color_for(id_seed));
+        let label = initials_for(if display_name.is_empty() {
+            id_seed
+        } else {
+            display_name
+        });
+        painter.text(
+            center,
+            egui::Align2::CENTER_CENTER,
+            label,
+            egui::FontId::proportional((size * 0.38).max(10.0)),
+            Color32::WHITE,
+        );
+    }
+
+    if let Some(dot_color) = status_dot {
+        let dot_r = (size * 0.17).clamp(4.0, 7.0);
+        let dot_center = Pos2::new(rect.right() - dot_r * 0.85, rect.bottom() - dot_r * 0.85);
+        painter.circle_filled(dot_center, dot_r + 2.0, ring_bg);
+        painter.circle_filled(dot_center, dot_r, dot_color);
+    }
+    resp
+}
+
+pub fn status_pill(ui: &mut egui::Ui, pal: &ThemePalette, label: &str, color: Color32) {
+    egui::Frame::new()
+        .fill(Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 28))
+        .stroke(Stroke::new(1.0, color))
+        .corner_radius(egui::CornerRadius::same(10))
+        .inner_margin(egui::Margin::symmetric(8, 3))
+        .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new(label)
+                    .size(11.5)
+                    .strong()
+                    .color(if pal.is_dark { color } else { pal.text_primary }),
+            );
+        });
 }
 
 #[cfg(test)]
@@ -188,37 +243,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_format_bytes_scales_cleanly() {
-        assert_eq!(format_bytes(512), "512 B");
-        assert_eq!(format_bytes(1536), "1.5 KiB");
-        assert_eq!(format_bytes(2 * 1024 * 1024), "2.00 MiB");
+    fn test_normalize_server_url_adds_defaults_cleanly() {
+        assert_eq!(
+            normalize_server_url("192.168.1.50", false),
+            "https://192.168.1.50:8000"
+        );
+        assert_eq!(
+            normalize_server_url("10.188.97.223:8443/", false),
+            "https://10.188.97.223:8443"
+        );
+        assert_eq!(
+            normalize_server_url("wss://relay.local:9000", false),
+            "https://relay.local:9000"
+        );
+        assert_eq!(
+            normalize_server_url("127.0.0.1:8080", true),
+            "http://127.0.0.1:8080"
+        );
     }
 
     #[test]
-    fn test_apply_discovered_master_updates_url_pin_and_tls_flag() {
-        let m = DiscoveredMaster {
-            url: "https://100.64.0.10:8000".to_string(),
-            host: "100.64.0.10".to_string(),
-            port: 8000,
-            https: true,
-            source_ip: "100.64.0.10".to_string(),
-            tls_cert_sha256_hex: Some("ab".repeat(32)),
-            master_ed25519_pub_hex: "cd".repeat(32),
-            signature_valid: true,
-            alternate_urls: vec!["https://192.168.1.50:8000".to_string()],
-        };
-        let mut url = String::new();
-        let mut pin = String::new();
-        let mut insecure = true;
-        apply_discovered_master(
-            &m,
-            "https://192.168.1.50:8000",
-            &mut url,
-            &mut pin,
-            &mut insecure,
-        );
-        assert_eq!(url, "https://192.168.1.50:8000");
-        assert_eq!(pin, "ab".repeat(32));
-        assert!(!insecure);
+    fn test_discovery_target_extracts_unicast_ip() {
+        let addr = discovery_target_for_server("https://10.188.97.223:8000").unwrap();
+        assert_eq!(addr.to_string(), "10.188.97.223:37020");
+        assert!(discovery_target_for_server("https://master.local:8000").is_none());
+    }
+
+    #[test]
+    fn test_initials_for_formats_names() {
+        assert_eq!(initials_for("Alice Bob"), "AB");
+        assert_eq!(initials_for("hami"), "HA");
+        assert_eq!(initials_for("x"), "X");
     }
 }
