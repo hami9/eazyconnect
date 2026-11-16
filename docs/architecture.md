@@ -54,7 +54,7 @@ flowchart LR
 ### 3. `crates/eazyconnect-core`
 - `tls`: `ServerTlsConfig` (`SelfSigned`, `LoadOrCreateSelfSigned`, `PemFiles`, `InsecureDisabled`), `ClientTlsConfig` (`WebPkiRoots`, `CaPem`, `PinnedCertSha256`), URL parser `parse_endpoint_url`, and shared TCP keepalive (`configure_tcp_keepalive` / `connect_tcp_keepalive` via `socket2`).
 - `discovery`: Signed UDP `37020` LAN & unicast discovery (`DISCOVER_EAZYCONNECT`) sending per-NIC LAN directed broadcasts past full-tunnel Exit VPNs, selecting peer-matched endpoints (`select_beacon_endpoints`), and signing `alternate_urls` with `Ed25519` (`eazyconnect-discover-v3`).
-- `protocol`: `RelayFrame` signaling/routing messages, 256-byte bucket-padded `EazyAppMessage` (`ChatText`, `FileShared`, `SerialData`, `SerialCommand`, `HardwareProbeRequest`, `HardwareProbeResponse`), canonical `Ed25519` signing transcripts, and `provision_duplex_from_ecdh`.
+- `protocol`: `RelayFrame` signaling/routing messages, 256-byte bucket-padded `EazyAppMessage` (`ChatText`, `FileShared`, `FileChunk`, `SerialData`, `SerialCommand`, `HardwareProbeRequest`, `HardwareProbeResponse`), `FileTransferAssembler` with `BLAKE3` whole-file verification, canonical `Ed25519` signing transcripts, and `provision_duplex_from_ecdh`.
 - `envelope`: Client-side E2E vault envelopes (`EZV1`) and incremental `BLAKE3` folder delta scanning (`SyncManifest`, `scan_folder_delta`).
 - `config`: Persistent `ClientConfig` with DPAPI-sealed bearer token storage and bilingual (`en` / `fa`) `UserProfile`.
 
@@ -70,8 +70,8 @@ flowchart LR
 - Shared `session` vault/TLS resolution helpers, `sync` folder delta uploader, `diag` host/network/LAN collector, and CLI binary `eazyconnect-client` (including `ui` launcher).
 
 ### 6. `crates/eazyconnect-ui` & `installer/`
-- Native Discord-style desktop chat application `eazyconnect-ui.exe` powered by `eframe`/`egui` and `rfd`, automating UDP discovery, TLS pin acquisition, device enrollment, WSS auto-reconnect, and background CubeHash pairing behind a clean Chat / Profile / Settings (`Account`, `Theme`, `Connection`) experience.
-- Graphical Windows WPF Setup & Prerequisite Wizard (`installer/EazyConnect-Setup.ps1` + `Setup-EazyConnect.bat`) + Inno Setup 6 build script (`installer/build-installer.ps1`).
+- Native responsive Discord-style desktop chat application `eazyconnect-ui.exe` powered by `eframe`/`egui` (`widgets.rs` button primitives + `LayoutMetrics` responsive layout) and `rfd`, supporting CubeHash E2E chunked file transfers (`+` attach button, progress bar, inline image thumbnails & Save cards) and automating UDP discovery, TLS pin acquisition, device enrollment, WSS auto-reconnect, and background CubeHash pairing behind a clean Chat / Profile / Settings (`Account`, `Theme`, `Connection`) experience.
+- Simplified 3-card Windows WPF Setup & Prerequisite Wizard (`installer/EazyConnect-Setup.ps1` + `Setup-EazyConnect.bat`) with instant async scanning + Inno Setup 6 build script (`installer/build-installer.ps1`).
 
 ## Master Server API Endpoints
 
