@@ -19,6 +19,7 @@ description = "High-speed Rust LAN file sync, hardware-bridged communication, an
 [workspace.dependencies]
 argon2 = "0.5"
 axum = { version = "0.8", features = ["ws", "multipart"] }
+base64 = "0.22"
 blake2 = "0.10"
 blake3 = "1.8"
 bytes = "1"

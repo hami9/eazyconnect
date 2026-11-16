@@ -7,6 +7,7 @@ authors.workspace = true
 description = "Protocol, TLS pinning, LAN discovery, CubeHash E2E envelope encryption, and delta sync for EazyConnect"
 
 [dependencies]
+base64.workspace = true
 blake3.workspace = true
 chacha20poly1305.workspace = true
 cubehash-core = { path = "../cubehash-core" }

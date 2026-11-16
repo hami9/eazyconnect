@@ -1,3 +1,4 @@
+use base64::engine::general_purpose::STANDARD as B64;
 use cubehash_core::primitives::{hkdf_expand_label, hmac_sha256_parts};
 use cubehash_core::{
     build_custody_bundle, AuditorCube, CellularMesh, CombiningFn, DeliveryAck, DuplexCubeSession,
@@ -9,6 +10,25 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroize;
 
 pub const APP_BUCKET_BYTES: usize = 256;
+pub const FILE_CHUNK_BYTES: usize = 128 * 1024;
+pub const MAX_E2E_CHAT_FILE_BYTES: usize = 25 * 1024 * 1024;
+
+/// Custom serde module for binary chunks encoded cleanly as Base64 inside JSON payloads.
+pub mod b64_serde {
+    use base64::Engine as _;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    use super::B64;
+
+    pub fn serialize<S: Serializer>(val: &[u8], s: S) -> std::result::Result<S::Ok, S::Error> {
+        s.serialize_str(&B64.encode(val))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Vec<u8>, D::Error> {
+        let encoded = String::deserialize(d)?;
+        B64.decode(encoded).map_err(serde::de::Error::custom)
+    }
+}
 
 /// Custom serde module for `[u8; 64]` Ed25519 signatures encoded as hex strings.
 pub mod sig64_serde {
@@ -150,6 +170,16 @@ pub enum EazyAppMessage {
         blake3_hex: String,
         size_bytes: u64,
         e2e: bool,
+    },
+    FileChunk {
+        transfer_id: String,
+        filename: String,
+        total_size: u64,
+        blake3_hex: String,
+        chunk_index: u32,
+        total_chunks: u32,
+        #[serde(with = "b64_serde")]
+        data: Vec<u8>,
     },
     SerialData {
         port: String,
@@ -537,6 +567,122 @@ fn derive_directional_custody(config: &MeshConfig, root: &[u8; 32]) -> (ThreeCub
     (custody, mesh_seed)
 }
 
+/// Result of ingesting a received [`EazyAppMessage::FileChunk`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileAssembleStatus {
+    Progress {
+        filename: String,
+        received_chunks: u32,
+        total_chunks: u32,
+    },
+    Completed {
+        filename: String,
+        blake3_hex: String,
+        bytes: Vec<u8>,
+    },
+}
+
+struct PartialTransfer {
+    filename: String,
+    total_size: u64,
+    blake3_hex: String,
+    chunks: Vec<Option<Vec<u8>>>,
+    received: u32,
+}
+
+/// Safely reassembles chunked CubeHash E2E file transfers and verifies `BLAKE3` integrity.
+#[derive(Default)]
+pub struct FileTransferAssembler {
+    pending: std::collections::HashMap<(String, String), PartialTransfer>,
+}
+
+impl FileTransferAssembler {
+    #[allow(clippy::too_many_arguments)]
+    pub fn push_chunk(
+        &mut self,
+        from: &str,
+        transfer_id: &str,
+        filename: &str,
+        total_size: u64,
+        blake3_hex: &str,
+        chunk_index: u32,
+        total_chunks: u32,
+        data: Vec<u8>,
+    ) -> std::result::Result<FileAssembleStatus, String> {
+        let max_chunks = (MAX_E2E_CHAT_FILE_BYTES / FILE_CHUNK_BYTES) as u32 + 2;
+        if total_chunks == 0
+            || total_chunks > max_chunks
+            || chunk_index >= total_chunks
+            || total_size > MAX_E2E_CHAT_FILE_BYTES as u64
+        {
+            return Err("invalid chunked file transfer bounds".to_string());
+        }
+        let clean_name = std::path::Path::new(filename)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("attachment.bin")
+            .to_string();
+
+        let key = (from.to_string(), transfer_id.to_string());
+        let entry = self.pending.entry(key.clone()).or_insert_with(|| PartialTransfer {
+            filename: clean_name.clone(),
+            total_size,
+            blake3_hex: blake3_hex.to_string(),
+            chunks: vec![None; total_chunks as usize],
+            received: 0,
+        });
+
+        if entry.chunks.len() != total_chunks as usize
+            || entry.total_size != total_size
+            || entry.blake3_hex != blake3_hex
+        {
+            self.pending.remove(&key);
+            return Err("conflicting chunk metadata in file transfer".to_string());
+        }
+
+        let idx = chunk_index as usize;
+        if entry.chunks[idx].is_none() {
+            entry.chunks[idx] = Some(data);
+            entry.received += 1;
+        }
+
+        if entry.received < total_chunks {
+            return Ok(FileAssembleStatus::Progress {
+                filename: entry.filename.clone(),
+                received_chunks: entry.received,
+                total_chunks,
+            });
+        }
+
+        let done = self.pending.remove(&key).unwrap();
+        let mut assembled = Vec::with_capacity(done.total_size as usize);
+        for part in done.chunks.into_iter().flatten() {
+            assembled.extend_from_slice(&part);
+        }
+        if assembled.len() as u64 != done.total_size {
+            return Err(format!(
+                "file size mismatch for '{}': expected {}B, got {}B",
+                done.filename,
+                done.total_size,
+                assembled.len()
+            ));
+        }
+        let actual_hex = blake3::hash(&assembled).to_hex().to_string();
+        if actual_hex != done.blake3_hex {
+            return Err(format!(
+                "BLAKE3 integrity mismatch for '{}'",
+                done.filename
+            ));
+        }
+        Ok(FileAssembleStatus::Completed {
+            filename: done.filename,
+            blake3_hex: done.blake3_hex,
+            bytes: assembled,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -559,5 +705,50 @@ mod tests {
             EazyAppMessage::ChatText { text } => assert!(text.starts_with("Medium length")),
             other => panic!("unexpected decoded message: {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_file_transfer_assembler_roundtrip_and_blake3_check() {
+        let data = b"Hello CubeHash P2P E2E File Payload across chunks!".to_vec();
+        let hash = blake3::hash(&data).to_hex().to_string();
+        let mut asm = FileTransferAssembler::default();
+
+        assert_eq!(
+            asm.push_chunk(
+                "alice",
+                "tx-1",
+                "../../evil/report.pdf",
+                data.len() as u64,
+                &hash,
+                0,
+                2,
+                data[..20].to_vec(),
+            )
+            .unwrap(),
+            FileAssembleStatus::Progress {
+                filename: "report.pdf".to_string(),
+                received_chunks: 1,
+                total_chunks: 2,
+            }
+        );
+
+        assert_eq!(
+            asm.push_chunk(
+                "alice",
+                "tx-1",
+                "../../evil/report.pdf",
+                data.len() as u64,
+                &hash,
+                1,
+                2,
+                data[20..].to_vec(),
+            )
+            .unwrap(),
+            FileAssembleStatus::Completed {
+                filename: "report.pdf".to_string(),
+                blake3_hex: hash,
+                bytes: data,
+            }
+        );
     }
 }

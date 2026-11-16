@@ -8,7 +8,8 @@ use eazyconnect_core::{
     connect_tcp_keepalive, decode_app_payload, encode_app_payload, epoch_hop_sign_bytes,
     pair_accept_sign_bytes, pair_offer_sign_bytes, parse_endpoint_url,
     provision_duplex_from_ecdh, relay_auth_challenge_sign_bytes, ClientTlsConfig, EazyAppMessage,
-    EazyMeshProfile, PairTranscriptParams, PeerIdentity, RelayFrame,
+    EazyMeshProfile, PairTranscriptParams, PeerIdentity, RelayFrame, FILE_CHUNK_BYTES,
+    MAX_E2E_CHAT_FILE_BYTES,
 };
 use eazyconnect_hw::{
     collect_hardware_report, send_serial_command, DeviceIdentity, SerialTransport,
@@ -429,6 +430,63 @@ impl EazyNode {
             },
         )
         .await
+    }
+
+    /// Streams raw file bytes peer-to-peer strictly inside CubeHash E2E chunked packets
+    /// (`FILE_CHUNK_BYTES` per packet, `DeliveryAck`-sequenced, `BLAKE3` verified).
+    pub async fn send_e2e_file_bytes<F>(
+        &self,
+        peer_id: &str,
+        filename: &str,
+        bytes: &[u8],
+        mut on_progress: F,
+    ) -> Result<(String, String), String>
+    where
+        F: FnMut(u32, u32),
+    {
+        if bytes.len() > MAX_E2E_CHAT_FILE_BYTES {
+            return Err(format!(
+                "file too large ({} bytes); maximum direct CubeHash transfer is {} MiB",
+                bytes.len(),
+                MAX_E2E_CHAT_FILE_BYTES / (1024 * 1024)
+            ));
+        }
+
+        let clean_name = std::path::Path::new(filename)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("attachment.bin")
+            .to_string();
+
+        let blake3_hex = blake3::hash(bytes).to_hex().to_string();
+        let transfer_id = random_hex_16()?;
+        let chunks: Vec<&[u8]> = if bytes.is_empty() {
+            vec![&[]]
+        } else {
+            bytes.chunks(FILE_CHUNK_BYTES).collect()
+        };
+        let total_chunks = chunks.len() as u32;
+        let total_size = bytes.len() as u64;
+
+        for (idx, chunk) in chunks.into_iter().enumerate() {
+            self.send_app_message(
+                peer_id,
+                EazyAppMessage::FileChunk {
+                    transfer_id: transfer_id.clone(),
+                    filename: clean_name.clone(),
+                    total_size,
+                    blake3_hex: blake3_hex.clone(),
+                    chunk_index: idx as u32,
+                    total_chunks,
+                    data: chunk.to_vec(),
+                },
+            )
+            .await?;
+            on_progress((idx + 1) as u32, total_chunks);
+        }
+
+        Ok((transfer_id, blake3_hex))
     }
 
     pub async fn send_serial_command_remote(

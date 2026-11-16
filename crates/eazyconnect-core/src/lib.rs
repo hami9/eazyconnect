@@ -21,9 +21,10 @@ pub use protocol::{
     encode_padded_bucket, epoch_hop_sign_bytes, http_auth_sign_bytes, pair_accept_sign_bytes,
     pair_offer_sign_bytes, provision_duplex_from_ecdh, relay_auth_challenge_sign_bytes,
     AuthChallengeResponse, AuthTokenResponse, CreateUserRequest, DerivedSession, DeviceAuthRequest,
-    DeviceRecordView, DiscoveryBeacon, EazyAppMessage, EazyMeshProfile, HealthResponse,
-    ListFilesResponse, PairTranscriptParams, PasswordLoginRequest, PeerIdentity, RelayFrame,
-    RelayTelemetrySnapshot, RelayTrafficEvent, ServerFileEntry,
+    DeviceRecordView, DiscoveryBeacon, EazyAppMessage, EazyMeshProfile, FileAssembleStatus,
+    FileTransferAssembler, HealthResponse, ListFilesResponse, PairTranscriptParams,
+    PasswordLoginRequest, PeerIdentity, RelayFrame, RelayTelemetrySnapshot, RelayTrafficEvent,
+    ServerFileEntry, FILE_CHUNK_BYTES, MAX_E2E_CHAT_FILE_BYTES,
 };
 pub use tls::{
     configure_tcp_keepalive, connect_tcp_keepalive, parse_endpoint_url, parse_sha256_pin_hex,
