@@ -70,7 +70,7 @@ flowchart LR
 - Shared `session` vault/TLS resolution helpers, `sync` folder delta uploader, `diag` host/network/LAN collector, and CLI binary `eazyconnect-client` (including `ui` launcher).
 
 ### 6. `crates/eazyconnect-ui` & `installer/`
-- Native desktop GUI binary `eazyconnect-ui.exe` powered by `eframe`/`egui` and `rfd`, driving `eazyconnect-client` and `eazyconnect-hw` natively on a background Tokio runtime.
+- Native Discord-style desktop chat application `eazyconnect-ui.exe` powered by `eframe`/`egui` and `rfd`, automating UDP discovery, TLS pin acquisition, device enrollment, WSS auto-reconnect, and background CubeHash pairing behind a clean Chat / Profile / Settings (`Account`, `Theme`, `Connection`) experience.
 - Graphical Windows WPF Setup & Prerequisite Wizard (`installer/EazyConnect-Setup.ps1` + `Setup-EazyConnect.bat`) + Inno Setup 6 build script (`installer/build-installer.ps1`).
 
 ## Master Server API Endpoints

@@ -841,6 +841,7 @@ dependencies = [
  "eframe",
  "egui",
  "hex",
+ "image",
  "rfd",
  "serde_json",
  "tokio",
@@ -1753,6 +1754,8 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
