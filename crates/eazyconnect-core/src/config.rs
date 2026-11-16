@@ -27,6 +27,8 @@ pub struct ClientConfig {
     pub tls_ca_pem_path: Option<String>,
     pub sealed_token_hex: Option<String>,
     #[serde(default)]
+    pub theme: Option<String>,
+    #[serde(default)]
     pub profile: UserProfile,
 }
 
