@@ -3,6 +3,7 @@
 mod app;
 mod state;
 mod theme;
+mod widgets;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -55,7 +56,7 @@ fn main() {
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1120.0, 740.0])
-            .with_min_inner_size([780.0, 520.0])
+            .with_min_inner_size([440.0, 480.0])
             .with_icon(Arc::new(icon)),
         ..Default::default()
     };

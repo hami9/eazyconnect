@@ -808,3 +808,133 @@ fn test_discovery_beacon_alternate_urls_signed_and_tamper_rejected() {
         &sig
     ));
 }
+
+#[tokio::test]
+async fn test_cubehash_chunked_file_transfer_over_wss() {
+    let dir = TempTestDir::new("ezc_e2e_file_chunks");
+    let (srv, url, tls_cfg, _pin) =
+        boot_test_master(&dir, false, EnrollmentPolicy::OpenLan, None).await;
+
+    let alice_id =
+        DeviceIdentity::load_or_create("alice", Some(&dir.0.join("ks_alice")), None).unwrap();
+    let bob_id =
+        DeviceIdentity::load_or_create("bob", Some(&dir.0.join("ks_bob")), None).unwrap();
+
+    let http = MasterHttpClient::new(&url, tls_cfg.clone(), false).unwrap();
+    http.enroll_device(&alice_id, None).await.unwrap();
+    http.enroll_device(&bob_id, None).await.unwrap();
+
+    let alice = EazyNode::connect(
+        alice_id,
+        NodeConnectOptions {
+            ws_url: url.clone(),
+            tls_config: tls_cfg.clone(),
+            allow_insecure_ws: false,
+            allow_remote_serial_os_fallback: false,
+            allow_remote_hw_probe: false,
+            auto_reconnect: false,
+        },
+    )
+    .await
+    .unwrap();
+    let mut alice_ev = alice.subscribe();
+
+    let bob = EazyNode::connect(
+        bob_id,
+        NodeConnectOptions {
+            ws_url: url.clone(),
+            tls_config: tls_cfg.clone(),
+            allow_insecure_ws: false,
+            allow_remote_serial_os_fallback: false,
+            allow_remote_hw_probe: false,
+            auto_reconnect: false,
+        },
+    )
+    .await
+    .unwrap();
+    let mut bob_ev = bob.subscribe();
+
+    let psk = b"cubehash-file-psk";
+    let pair_id = alice
+        .send_pair_offer("bob", EazyMeshProfile::Compact, psk)
+        .await
+        .unwrap();
+    let incoming_id = wait_event(&mut bob_ev, |e| match e {
+        NodeEvent::IncomingPairOffer { pair_id, .. } => Some(pair_id.clone()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(incoming_id, pair_id);
+    bob.accept_pair_offer(&pair_id, psk).await.unwrap();
+    wait_event(&mut alice_ev, |e| match e {
+        NodeEvent::Paired { peer, .. } if peer == "bob" => Some(()),
+        _ => None,
+    })
+    .await;
+
+    // 300 KiB deterministic payload (spans 3 x 128 KiB CubeHash E2E chunks + BLAKE3 check).
+    let payload: Vec<u8> = (0..(300 * 1024)).map(|i| ((i * 37) & 0xFF) as u8).collect();
+    let expected_b3 = blake3::hash(&payload).to_hex().to_string();
+
+    let send_handle = tokio::spawn(async move {
+        let mut progress = Vec::new();
+        let res = alice
+            .send_e2e_file_bytes("bob", "telemetry-dump.bin", &payload, |sent, total| {
+                progress.push((sent, total));
+            })
+            .await;
+        (alice, res, progress)
+    });
+
+    let mut assembler = eazyconnect_core::FileTransferAssembler::default();
+    let assembled = loop {
+        if let NodeEvent::MessageReceived {
+            from,
+            msg:
+                EazyAppMessage::FileChunk {
+                    transfer_id,
+                    filename,
+                    total_size,
+                    blake3_hex,
+                    chunk_index,
+                    total_chunks,
+                    data,
+                },
+            ..
+        } = bob_ev.recv().await.unwrap()
+        {
+            match assembler
+                .push_chunk(
+                    &from,
+                    &transfer_id,
+                    &filename,
+                    total_size,
+                    &blake3_hex,
+                    chunk_index,
+                    total_chunks,
+                    data,
+                )
+                .unwrap()
+            {
+                eazyconnect_core::FileAssembleStatus::Progress { .. } => {}
+                eazyconnect_core::FileAssembleStatus::Completed {
+                    filename,
+                    blake3_hex,
+                    bytes,
+                } => break (filename, blake3_hex, bytes),
+            }
+        }
+    };
+
+    let (alice, send_res, progress) = send_handle.await.unwrap();
+    let (_, sent_b3) = send_res.unwrap();
+    assert_eq!(progress, vec![(1, 3), (2, 3), (3, 3)]);
+    assert_eq!(assembled.0, "telemetry-dump.bin");
+    assert_eq!(assembled.1, expected_b3);
+    assert_eq!(sent_b3, expected_b3);
+    assert_eq!(assembled.2.len(), 300 * 1024);
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+    srv.abort();
+}

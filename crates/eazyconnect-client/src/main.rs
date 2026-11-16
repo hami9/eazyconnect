@@ -563,6 +563,12 @@ async fn cmd_chat(opts: &GlobalOpts, args: &[String]) -> Result<(), String> {
                             EazyAppMessage::FileShared { filename, blake3_hex, size_bytes, e2e, .. } => {
                                 println!("[file notice from {from}] {filename} ({size_bytes}B, blake3={blake3_hex}, e2e={e2e})");
                             }
+                            EazyAppMessage::FileChunk { filename, chunk_index, total_chunks, total_size, .. } => {
+                                println!(
+                                    "[cubehash file chunk {}/{total_chunks} from {from}] {filename} ({total_size}B)",
+                                    chunk_index + 1
+                                );
+                            }
                             EazyAppMessage::SerialData { port, data } => {
                                 println!("[serial {port} from {from}] {}", String::from_utf8_lossy(&data));
                             }
