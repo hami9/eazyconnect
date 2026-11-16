@@ -67,7 +67,11 @@ flowchart LR
 ### 5. `crates/eazyconnect-client`
 - `MasterHttpClient` over `tokio-rustls` + `hyper` with enforced HTTPS/pin verification, TCP keepalive, 15s connect timeout, and scaled slow-link transfer timeouts.
 - `EazyNode` managing non-blocking WSS transport with 20s heartbeats, stateful `auto_reconnect` (rolling back un-ACKed `inflight` TX packets cleanly), per-peer outbound `DeliveryAck` queuing, `X25519` pairing, E2E chat, and encrypted hardware serial bridge dispatch.
-- `sync` folder delta uploader, `diag` host/network/LAN collector, and CLI binary `eazyconnect-client`.
+- Shared `session` vault/TLS resolution helpers, `sync` folder delta uploader, `diag` host/network/LAN collector, and CLI binary `eazyconnect-client` (including `ui` launcher).
+
+### 6. `crates/eazyconnect-ui` & `installer/`
+- Native desktop GUI binary `eazyconnect-ui.exe` powered by `eframe`/`egui` and `rfd`, driving `eazyconnect-client` and `eazyconnect-hw` natively on a background Tokio runtime.
+- Graphical Windows WPF Setup & Prerequisite Wizard (`installer/EazyConnect-Setup.ps1` + `Setup-EazyConnect.bat`) + Inno Setup 6 build script (`installer/build-installer.ps1`).
 
 ## Master Server API Endpoints
 

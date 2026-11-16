@@ -6,6 +6,7 @@ members = [
     "crates/eazyconnect-core",
     "crates/eazyconnect-server",
     "crates/eazyconnect-client",
+    "crates/eazyconnect-ui",
 ]
 
 [workspace.package]
@@ -23,6 +24,8 @@ blake3 = "1.8"
 bytes = "1"
 chacha20poly1305 = "0.10"
 ed25519-dalek = { version = "2.2", features = ["rand_core", "zeroize"] }
+eframe = { version = "0.37", default-features = false, features = ["default_fonts", "glow", "clipboard", "links", "system_fonts", "wayland", "x11"] }
+egui = { version = "0.37", default-features = false, features = ["default_fonts"] }
 futures-util = "0.3"
 getrandom = "0.2"
 hex = "0.4"
@@ -34,6 +37,7 @@ hyper-util = { version = "0.1", features = ["client-legacy", "http1", "http2", "
 nusb = "0.1"
 rand_core = { version = "0.6", features = ["getrandom"] }
 rcgen = { version = "0.13", default-features = false, features = ["crypto", "pem", "ring"] }
+rfd = "0.18"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pemfile = "2.2"
 rustls-pki-types = "1"

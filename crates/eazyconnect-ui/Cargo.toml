@@ -1,0 +1,19 @@
+[package]
+name = "eazyconnect-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Native Rust desktop UI for EazyConnect (discovery, E2E file vault sync, CubeHash chat, hardware bridge, and diagnostics)"
+
+[dependencies]
+cubehash-core = { path = "../cubehash-core" }
+eazyconnect-client = { path = "../eazyconnect-client" }
+eazyconnect-core = { path = "../eazyconnect-core" }
+eazyconnect-hw = { path = "../eazyconnect-hw" }
+eframe.workspace = true
+egui.workspace = true
+hex.workspace = true
+rfd.workspace = true
+serde_json.workspace = true
+tokio.workspace = true

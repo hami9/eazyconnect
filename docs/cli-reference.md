@@ -134,6 +134,9 @@ eazyconnect-client profile set [--name <name>] [--lang en|fa]
 # Run hardware + LAN UDP discovery + optional Master /api/v1/health check
 eazyconnect-client diag [--upload]
 
+# Launch the native EazyConnect Desktop UI (`eazyconnect-ui`)
+eazyconnect-client ui
+
 # Windows logon scheduled task management
 eazyconnect-client service install-task [--name EazyConnectClient] [args...]
 eazyconnect-client service uninstall-task [--name EazyConnectClient]
