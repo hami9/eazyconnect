@@ -1,21 +1,22 @@
 use std::fs;
-use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
 use eazyconnect_client::{
-    default_sync_manifest_path, run_diagnostics, sync_folder_to_master, EazyNode, MasterHttpClient,
-    NodeConnectOptions, NodeEvent,
+    build_http_client_from_cfg, default_sync_manifest_path, load_bearer_token,
+    resolve_client_id as resolve_client_id_shared,
+    resolve_url_and_tls as resolve_url_and_tls_shared, run_diagnostics, sync_folder_to_master,
+    EazyNode, MasterHttpClient, NodeConnectOptions, NodeEvent,
 };
 use eazyconnect_core::{
     decrypt_file_from_vault, discover_masters, encrypt_file_for_vault, load_client_config,
-    parse_sha256_pin_hex, profile_heading, save_client_config, ClientConfig, ClientTlsConfig,
-    CreateUserRequest, EazyAppMessage, EazyMeshProfile, DEFAULT_DISCOVERY_PORT,
+    profile_heading, save_client_config, ClientConfig, ClientTlsConfig, CreateUserRequest,
+    EazyAppMessage, EazyMeshProfile, DEFAULT_DISCOVERY_PORT,
 };
 use eazyconnect_hw::{
-    collect_hardware_report, enumerate_serial_ports, hostname, seal_local_secret,
-    send_serial_command, unseal_local_secret, DeviceIdentity, OsSerialTransport,
+    collect_hardware_report, enumerate_serial_ports, send_serial_command, DeviceIdentity,
+    OsSerialTransport,
 };
 use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -134,6 +135,7 @@ async fn dispatch(opts: GlobalOpts) -> Result<(), String> {
         "hw" => cmd_hw(&opts, sub_args).await,
         "profile" => cmd_profile(&opts, sub_args),
         "diag" => cmd_diag(&opts, sub_args).await,
+        "ui" => cmd_ui(&opts),
         "service" => cmd_service(sub_args),
         other => Err(format!("unknown subcommand '{other}' (try --help)")),
     }
@@ -866,53 +868,68 @@ fn cmd_service(args: &[String]) -> Result<(), String> {
     }
 }
 
+fn cmd_ui(opts: &GlobalOpts) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| format!("failed to locate binary dir: {e}"))?;
+    let ui_name = if cfg!(windows) {
+        "eazyconnect-ui.exe"
+    } else {
+        "eazyconnect-ui"
+    };
+    let sibling = exe.with_file_name(ui_name);
+    let target = if sibling.exists() {
+        sibling
+    } else {
+        PathBuf::from(ui_name)
+    };
+    let mut cmd = Command::new(&target);
+    if let Some(ref cfg) = opts.config_path {
+        cmd.arg("--config").arg(cfg);
+    }
+    if let Some(ref ks) = opts.keystore_dir {
+        cmd.arg("--keystore-dir").arg(ks);
+    }
+    cmd.spawn().map_err(|e| {
+        format!(
+            "failed to launch native UI ({}): {e}. Build or install `eazyconnect-ui` first.",
+            target.display()
+        )
+    })?;
+    Ok(())
+}
+
 fn resolve_client_id(opts: &GlobalOpts, cfg: &ClientConfig) -> String {
-    opts.client_id
-        .clone()
-        .or_else(|| cfg.client_id.clone())
-        .unwrap_or_else(hostname)
+    resolve_client_id_shared(opts.client_id.as_deref(), cfg)
 }
 
 fn resolve_url_and_tls(
     opts: &GlobalOpts,
     cfg: &ClientConfig,
 ) -> Result<(String, ClientTlsConfig), String> {
-    let url = opts
-        .master
-        .clone()
-        .or_else(|| cfg.master.clone())
-        .ok_or_else(|| "no master URL configured (pass --master or run enroll/login first)".to_string())?;
-
-    let tls = if let Some(pin_hex) = opts.tls_pin.as_ref().or(cfg.tls_pin_hex.as_ref()) {
-        ClientTlsConfig::PinnedCertSha256(parse_sha256_pin_hex(pin_hex)?)
-    } else if let Some(ref ca_path) = opts
-        .tls_ca
-        .clone()
-        .or_else(|| cfg.tls_ca_pem_path.as_ref().map(PathBuf::from))
-    {
-        let pem = fs::read(ca_path)
-            .map_err(|e| format!("failed to read --tls-ca {}: {e}", ca_path.display()))?;
-        ClientTlsConfig::CaPem(pem)
-    } else {
-        ClientTlsConfig::WebPkiRoots
-    };
-
-    Ok((url, tls))
+    resolve_url_and_tls_shared(
+        opts.master.as_deref(),
+        opts.tls_pin.as_deref(),
+        opts.tls_ca.as_deref(),
+        cfg,
+    )
 }
 
 fn build_http_client(
     opts: &GlobalOpts,
     cfg: &ClientConfig,
 ) -> Result<(MasterHttpClient, String), String> {
-    let (url, tls) = resolve_url_and_tls(opts, cfg)?;
-    let client = MasterHttpClient::new(&url, tls, opts.insecure_http)?;
+    let (client, url, _) = build_http_client_from_cfg(
+        opts.master.as_deref(),
+        opts.tls_pin.as_deref(),
+        opts.tls_ca.as_deref(),
+        opts.insecure_http,
+        cfg,
+    )?;
     Ok((client, url))
 }
 
 fn load_bearer_from_cfg(opts: &GlobalOpts, cfg: &ClientConfig) -> Result<String, String> {
     let cid = resolve_client_id(opts, cfg);
-    cfg.load_token(&cid)?
-        .ok_or_else(|| "no sealed session token stored; run enroll or login first".to_string())
+    load_bearer_token(&cid, cfg)
 }
 
 fn load_or_create_vault_key(
@@ -920,28 +937,11 @@ fn load_or_create_vault_key(
     client_id: &str,
     override_hex: Option<&str>,
 ) -> Result<[u8; 32], String> {
-    if let Some(hex_str) = override_hex {
-        return parse_sha256_pin_hex(hex_str);
-    }
-    let vault_path = match &opts.config_path {
-        Some(p) => p.with_file_name("vault.key.sealed"),
-        None => eazyconnect_core::default_config_path()?.with_file_name("vault.key.sealed"),
-    };
-    if vault_path.exists() {
-        let hex_blob = fs::read_to_string(&vault_path).map_err(|e| e.to_string())?;
-        let raw = unseal_local_secret(&format!("{client_id}-vault"), hex_blob.trim())?;
-        return <[u8; 32]>::try_from(raw.as_slice())
-            .map_err(|_| "corrupted sealed vault key length".to_string());
-    }
-    let mut key = [0u8; 32];
-    getrandom::getrandom(&mut key).map_err(|e| e.to_string())?;
-    let sealed = seal_local_secret(&format!("{client_id}-vault"), &key)?;
-    if let Some(parent) = vault_path.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    fs::write(&vault_path, sealed).map_err(|e| e.to_string())?;
-    io::stdout().flush().ok();
-    Ok(key)
+    eazyconnect_client::load_or_create_vault_key(
+        opts.config_path.as_deref(),
+        client_id,
+        override_hex,
+    )
 }
 
 fn print_help() {
@@ -970,6 +970,7 @@ fn print_help() {
          \thw serial list|send|bridge  Direct COM/USB serial I/O & E2E CubeHash bridge\n\
          \tprofile show|set       View/update bilingual (en/fa) profile settings\n\
          \tdiag [--upload]        Run hardware + LAN + TLS diagnostics\n\
+         \tui                     Launch native EazyConnect Desktop UI (`eazyconnect-ui`)\n\
          \tservice <cmd>          Manage Windows Task Scheduler logon helper",
         env!("CARGO_PKG_VERSION")
     );
