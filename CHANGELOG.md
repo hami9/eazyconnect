@@ -2,7 +2,12 @@
 
 All notable changes to **EazyConnect** are documented in this file.
 
-## Unreleased — VPN & Dual-Homed Network Support
+## Unreleased — Native Desktop UI, Prerequisite Installer & VPN Support
+
+### Native Desktop UI (`eazyconnect-ui`) & Setup Wizard (`installer/`)
+- Added `crates/eazyconnect-ui` (`eazyconnect-ui.exe`), a pure native Rust desktop window (`eframe` / `egui` + `rfd` native file pickers) with tabs for UDP `37020` discovery & enrollment, single-file / incremental `BLAKE3` `--e2e` vault sync, full-duplex CubeHash E2E peer chat (`/hop`, `/hwprobe`, tamper test), host hardware/VPN/COM/USB/HID inspection & serial I/O, diagnostics JSON viewer, and user profile management.
+- Added `eazyconnect-client ui` subcommand and shared session/vault helpers in `eazyconnect-client::session`.
+- Added graphical Fluent dark WPF setup & prerequisite installer ([Setup-EazyConnect.bat](Setup-EazyConnect.bat) / [installer/EazyConnect-Setup.ps1](installer/EazyConnect-Setup.ps1)) that scans and installs missing dependencies via `winget`, builds or copies release binaries, adds Windows Firewall (`TCP 8000` / `UDP 37020`) rules, creates Desktop/Start Menu shortcuts, configures startup tasks, and assists with VPN LAN coexistence, alongside Inno Setup 6 definition [installer/eazyconnect.iss](installer/eazyconnect.iss) and packager [installer/build-installer.ps1](installer/build-installer.ps1).
 
 ### VPN Topology & Discovery
 - Expanded `classify_vpn_adapter` in `eazyconnect-hw` for WireGuard, Tailscale, ZeroTier, OpenVPN, Cloudflare WARP, Wintun, Proton, Mullvad, Cisco AnyConnect, GlobalProtect, Outline, Nekoray/Sing-box, Forti, SoftEther, and Hamachi, and added Win32 IPv4 prefix (`ipv4_cidrs`) extraction to compute subnet-directed LAN broadcasts (`collect_lan_directed_broadcasts`) and preferred non-VPN LAN endpoints (`best_lan_ipv4`).
