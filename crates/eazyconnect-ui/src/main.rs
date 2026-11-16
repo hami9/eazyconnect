@@ -12,6 +12,8 @@ use tokio::runtime::Builder;
 
 use crate::app::EazyUiApp;
 
+pub(crate) const APP_LOGO_PNG: &[u8] = include_bytes!("../assets/logo.png");
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "-h" || a == "--help") {
@@ -79,6 +81,16 @@ fn main() {
 }
 
 fn build_app_icon() -> egui::IconData {
+    if let Ok(img) = image::load_from_memory(APP_LOGO_PNG) {
+        let rgba = img.to_rgba8();
+        let (width, height) = rgba.dimensions();
+        return egui::IconData {
+            rgba: rgba.into_raw(),
+            width,
+            height,
+        };
+    }
+
     let size = 32usize;
     let mut rgba = Vec::with_capacity(size * size * 4);
     for y in 0..size {
@@ -87,11 +99,10 @@ fn build_app_icon() -> egui::IconData {
             let dy = y as f32 - 15.5;
             let dist = (dx * dx + dy * dy).sqrt();
             let (r, g, b, a) = if dist < 13.5 {
-                let inner = (9..23).contains(&x) && (9..23).contains(&y);
-                if inner {
-                    (242, 243, 245, 255)
+                if (9..23).contains(&x) && (9..23).contains(&y) {
+                    (31, 242, 138, 255) // Neon green core
                 } else {
-                    (88, 101, 242, 255) // Discord Blurple emblem
+                    (0, 154, 162, 255) // Teal badge
                 }
             } else {
                 (0, 0, 0, 0)

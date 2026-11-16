@@ -227,12 +227,12 @@ pub fn initials_for(name: &str) -> String {
 
 pub fn avatar_color_for(id: &str) -> Color32 {
     const PALETTE: &[Color32] = &[
-        Color32::from_rgb(88, 101, 242),
-        Color32::from_rgb(35, 165, 90),
-        Color32::from_rgb(235, 69, 158),
-        Color32::from_rgb(240, 178, 50),
-        Color32::from_rgb(0, 168, 252),
-        Color32::from_rgb(230, 126, 34),
+        Color32::from_rgb(0, 184, 194),   // Teal Cyan
+        Color32::from_rgb(31, 222, 132),  // Neon Mint Green
+        Color32::from_rgb(14, 165, 233),  // Sky Cyan
+        Color32::from_rgb(16, 185, 129),  // Emerald
+        Color32::from_rgb(240, 178, 50),  // Amber
+        Color32::from_rgb(56, 189, 248),  // Ice Cyan
     ];
     let hash = id
         .bytes()

@@ -12,6 +12,12 @@ pub fn primary_btn(
     min_width: f32,
     height: f32,
 ) -> Response {
+    let rim = Color32::from_rgba_unmultiplied(
+        pal.accent_neon.r(),
+        pal.accent_neon.g(),
+        pal.accent_neon.b(),
+        140,
+    );
     ui.add(
         egui::Button::new(
             RichText::new(label)
@@ -19,8 +25,8 @@ pub fn primary_btn(
                 .strong()
                 .color(Color32::WHITE),
         )
-        .fill(pal.blurple)
-        .stroke(Stroke::NONE)
+        .fill(pal.accent)
+        .stroke(Stroke::new(1.0, rim))
         .corner_radius(CornerRadius::same(8))
         .min_size(Vec2::new(min_width, height)),
     )
@@ -68,9 +74,9 @@ pub fn rail_squircle_btn(
     let hovered = resp.hovered();
     let radius = if active || hovered { 14 } else { (size * 0.5) as u8 };
     let fill = if active {
-        pal.blurple
+        pal.accent
     } else if hovered {
-        Color32::from_rgb(104, 117, 245)
+        pal.accent_hover
     } else {
         pal.dock_bg
     };
@@ -81,6 +87,14 @@ pub fn rail_squircle_btn(
     };
     ui.painter()
         .rect_filled(rect, CornerRadius::same(radius), fill);
+    if active {
+        ui.painter().rect_stroke(
+            rect,
+            CornerRadius::same(radius),
+            Stroke::new(1.5, pal.accent_neon),
+            egui::StrokeKind::Inside,
+        );
+    }
     ui.painter().text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
@@ -91,17 +105,56 @@ pub fn rail_squircle_btn(
     resp.on_hover_text(tooltip)
 }
 
+pub fn rail_logo_btn(
+    ui: &mut Ui,
+    pal: &ThemePalette,
+    logo: Option<&TextureHandle>,
+    tooltip: &str,
+    active: bool,
+    size: f32,
+) -> Response {
+    if let Some(tex) = logo {
+        let (rect, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
+        let hovered = resp.hovered();
+        let radius = if active || hovered { 13 } else { (size * 0.42) as u8 };
+        ui.painter().image(
+            tex.id(),
+            rect,
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            Color32::WHITE,
+        );
+        if active || hovered {
+            ui.painter().rect_stroke(
+                rect,
+                CornerRadius::same(radius),
+                Stroke::new(
+                    if active { 2.0 } else { 1.5 },
+                    if active { pal.accent_neon } else { pal.accent_hover },
+                ),
+                egui::StrokeKind::Inside,
+            );
+        }
+        resp.on_hover_text(tooltip)
+    } else {
+        rail_squircle_btn(ui, pal, "ec", tooltip, active, size)
+    }
+}
+
 pub fn attach_circle_btn(ui: &mut Ui, pal: &ThemePalette, tooltip: &str) -> Response {
     let size = 32.0;
     let (rect, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
     let hovered = resp.hovered();
-    let fill = if hovered { pal.blurple } else { pal.hover_bg };
+    let fill = if hovered { pal.accent } else { pal.hover_bg };
     let fg = if hovered {
         Color32::WHITE
     } else {
         pal.text_primary
     };
     ui.painter().circle_filled(rect.center(), size * 0.5, fill);
+    if hovered {
+        ui.painter()
+            .circle_stroke(rect.center(), size * 0.5, Stroke::new(1.2, pal.accent_neon));
+    }
     ui.painter().text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
@@ -160,7 +213,16 @@ pub fn file_attachment_card(
             }
             ui.horizontal(|ui| {
                 Frame::new()
-                    .fill(pal.blurple)
+                    .fill(pal.accent)
+                    .stroke(Stroke::new(
+                        1.0,
+                        Color32::from_rgba_unmultiplied(
+                            pal.accent_neon.r(),
+                            pal.accent_neon.g(),
+                            pal.accent_neon.b(),
+                            150,
+                        ),
+                    ))
                     .corner_radius(CornerRadius::same(8))
                     .inner_margin(Margin::symmetric(9, 7))
                     .show(ui, |ui| {

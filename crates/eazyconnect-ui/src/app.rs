@@ -29,8 +29,8 @@ use crate::state::{
 };
 use crate::theme::{apply_theme_to_ctx, palette, ThemeMode, ThemePalette};
 use crate::widgets::{
-    attach_circle_btn, danger_btn, file_attachment_card, primary_btn, rail_squircle_btn,
-    secondary_btn, unread_badge,
+    attach_circle_btn, danger_btn, file_attachment_card, primary_btn, rail_logo_btn,
+    rail_squircle_btn, secondary_btn, unread_badge,
 };
 
 pub struct EazyUiApp {
@@ -71,6 +71,7 @@ pub struct EazyUiApp {
     profile_lang: String,
     avatar_texture: Option<TextureHandle>,
     avatar_loaded_path: String,
+    app_logo_texture: Option<TextureHandle>,
 
     // Optional User Account Login / Provisioning inside Account Settings
     login_username: String,
@@ -162,6 +163,7 @@ impl EazyUiApp {
             },
             avatar_texture: None,
             avatar_loaded_path: String::new(),
+            app_logo_texture: load_embedded_logo_texture(ctx),
             login_username: cfg.username.clone().unwrap_or_default(),
             login_password: String::new(),
             new_user_name: String::new(),
@@ -1065,15 +1067,25 @@ impl EazyUiApp {
                             .show(ui, |ui| {
                                 ui.set_max_width(card_w);
                                 ui.vertical_centered(|ui| {
-                                    paint_avatar(
-                                        ui,
-                                        58.0,
-                                        "ec",
-                                        "EC",
-                                        None,
-                                        pal.sidebar_bg,
-                                        None,
-                                    );
+                                    if let Some(ref logo_tex) = self.app_logo_texture {
+                                        ui.add(
+                                            egui::Image::new((
+                                                logo_tex.id(),
+                                                Vec2::splat(68.0),
+                                            ))
+                                            .corner_radius(CornerRadius::same(16)),
+                                        );
+                                    } else {
+                                        paint_avatar(
+                                            ui,
+                                            58.0,
+                                            "ec",
+                                            "EC",
+                                            None,
+                                            pal.sidebar_bg,
+                                            None,
+                                        );
+                                    }
                                     ui.add_space(10.0);
                                     ui.label(
                                         RichText::new("Welcome to EazyConnect")
@@ -1197,7 +1209,16 @@ impl EazyUiApp {
                                                     .strong()
                                                     .color(Color32::WHITE),
                                             )
-                                            .fill(pal.blurple)
+                                            .fill(pal.accent)
+                                            .stroke(Stroke::new(
+                                                1.0,
+                                                Color32::from_rgba_unmultiplied(
+                                                    pal.accent_neon.r(),
+                                                    pal.accent_neon.g(),
+                                                    pal.accent_neon.b(),
+                                                    150,
+                                                ),
+                                            ))
                                             .corner_radius(CornerRadius::same(8))
                                             .min_size(Vec2::new(primary_w, 38.0)),
                                         )
@@ -1241,10 +1262,10 @@ impl EazyUiApp {
             )
             .show(ui, |ui| {
                 ui.vertical_centered(|ui| {
-                    if rail_squircle_btn(
+                    if rail_logo_btn(
                         ui,
                         pal,
-                        "EC",
+                        self.app_logo_texture.as_ref(),
                         "Direct Messages",
                         !self.settings_open,
                         rail_icon_sz,
@@ -1786,7 +1807,11 @@ impl EazyUiApp {
                                         if !grouped {
                                             ui.horizontal(|ui| {
                                                 let name_col = if msg.outgoing {
-                                                    pal.blurple
+                                                    if pal.is_dark {
+                                                        pal.accent_neon
+                                                    } else {
+                                                        pal.accent
+                                                    }
                                                 } else {
                                                     avatar_color_for(&peer)
                                                 };
@@ -2309,11 +2334,16 @@ impl EazyUiApp {
             for mode in [ThemeMode::DiscordDark, ThemeMode::Midnight, ThemeMode::Light] {
                 let p = palette(mode);
                 let active = self.theme_mode == mode;
+                let hl = if p.is_dark {
+                    pal.accent_neon
+                } else {
+                    pal.accent
+                };
                 let frame = Frame::new()
                     .fill(p.chat_bg)
                     .stroke(Stroke::new(
                         if active { 2.5 } else { 1.0 },
-                        if active { pal.blurple } else { pal.border },
+                        if active { hl } else { pal.border },
                     ))
                     .corner_radius(CornerRadius::same(10))
                     .inner_margin(Margin::same(14));
@@ -2325,7 +2355,7 @@ impl EazyUiApp {
                             ui.label(
                                 RichText::new(if active { "Active" } else { "Select" })
                                     .size(11.5)
-                                    .color(if active { pal.blurple } else { p.text_muted }),
+                                    .color(if active { hl } else { p.text_muted }),
                             );
                         });
                     })
@@ -2597,4 +2627,9 @@ fn load_preview_image(bytes: &[u8], max_dim: u32) -> Option<ColorImage> {
         [w as usize, h as usize],
         resized.as_raw(),
     ))
+}
+
+fn load_embedded_logo_texture(ctx: &egui::Context) -> Option<TextureHandle> {
+    let img = load_preview_image(crate::APP_LOGO_PNG, 128)?;
+    Some(ctx.load_texture("app_logo", img, TextureOptions::LINEAR))
 }

@@ -22,9 +22,9 @@ if (-not (Test-Path $IconPath)) {
     $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
     $g.Clear([System.Drawing.Color]::FromArgb(255, 13, 18, 30))
 
-    $penOuter = New-Object System.Drawing.Pen ([System.Drawing.Color]::FromArgb(255, 16, 185, 129)), 4
+    $penOuter = New-Object System.Drawing.Pen ([System.Drawing.Color]::FromArgb(255, 31, 242, 138)), 4
     $g.DrawRectangle($penOuter, 8, 8, 48, 48)
-    $brushInner = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(255, 56, 189, 248))
+    $brushInner = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(255, 0, 154, 162))
     $g.FillRectangle($brushInner, 18, 18, 28, 28)
     $penOuter.Dispose(); $brushInner.Dispose(); $g.Dispose()
 
@@ -67,6 +67,10 @@ foreach ($bin in @('eazyconnect-ui.exe', 'eazyconnect-client.exe', 'eazyconnect-
 Copy-Item (Join-Path $RepoRoot 'Setup-EazyConnect.bat') (Join-Path $PortableDir 'Setup-EazyConnect.bat') -Force
 Copy-Item (Join-Path $PSScriptRoot 'EazyConnect-Setup.ps1') (Join-Path $PortableDir 'installer\EazyConnect-Setup.ps1') -Force
 Copy-Item $IconPath (Join-Path $PortableDir 'installer\eazyconnect.ico') -Force
+$LogoPng = Join-Path $RepoRoot 'crates\eazyconnect-ui\assets\logo.png'
+if (Test-Path $LogoPng) {
+    Copy-Item $LogoPng (Join-Path $PortableDir 'installer\logo.png') -Force
+}
 Copy-Item (Join-Path $RepoRoot 'README.md') (Join-Path $PortableDir 'docs\README.md') -Force
 Copy-Item (Join-Path $RepoRoot 'docs\vpn-guide.md') (Join-Path $PortableDir 'docs\vpn-guide.md') -Force
 

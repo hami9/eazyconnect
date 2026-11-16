@@ -44,25 +44,27 @@ $RepoRoot = if (Test-Path (Join-Path $ScriptDir '..\Cargo.toml')) {
 
     <Window.Resources>
         <Style TargetType="Button" x:Key="PrimaryBtn">
-            <Setter Property="Background" Value="#5865F2"/>
+            <Setter Property="Background" Value="#009EA6"/>
             <Setter Property="Foreground" Value="#FFFFFF"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
             <Setter Property="FontSize" Value="13"/>
             <Setter Property="Padding" Value="16,9"/>
-            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="BorderBrush" Value="#2DF58A"/>
+            <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
-                        <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="8" Padding="{TemplateBinding Padding}">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="8" Padding="{TemplateBinding Padding}">
                             <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#6D78F8"/>
+                                <Setter TargetName="Bd" Property="Background" Value="#00BCC4"/>
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter TargetName="Bd" Property="Background" Value="#383A40"/>
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="#3F4147"/>
                                 <Setter Property="Foreground" Value="#80848E"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
@@ -134,7 +136,7 @@ $RepoRoot = if (Test-Path (Join-Path $ScriptDir '..\Cargo.toml')) {
         <Style TargetType="TextBox">
             <Setter Property="Background" Value="#1E1F22"/>
             <Setter Property="Foreground" Value="#F2F3F5"/>
-            <Setter Property="CaretBrush" Value="#5865F2"/>
+            <Setter Property="CaretBrush" Value="#2DF58A"/>
             <Setter Property="BorderBrush" Value="#3F4147"/>
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="Padding" Value="10,7"/>
@@ -177,9 +179,12 @@ $RepoRoot = if (Test-Path (Join-Path $ScriptDir '..\Cargo.toml')) {
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
 
-                <Border Grid.Column="0" Width="42" Height="42" CornerRadius="12" Background="#5865F2" Margin="0,0,14,0">
-                    <TextBlock Text="EC" FontSize="17" FontWeight="Bold" Foreground="#FFFFFF" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                </Border>
+                <Grid Grid.Column="0" Width="44" Height="44" Margin="0,0,14,0">
+                    <Border x:Name="HeaderLogoFallback" CornerRadius="11" Background="#009EA6" BorderBrush="#2DF58A" BorderThickness="1.5">
+                        <TextBlock Text="ec" FontSize="18" FontWeight="Bold" Foreground="#FFFFFF" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <Image x:Name="ImgHeaderLogo" Width="44" Height="44" Stretch="Uniform" Visibility="Collapsed"/>
+                </Grid>
 
                 <StackPanel Grid.Column="1" VerticalAlignment="Center">
                     <TextBlock Text="EazyConnect Easy Setup" FontSize="18" FontWeight="Bold" Foreground="#F2F3F5"/>
@@ -217,7 +222,7 @@ $RepoRoot = if (Test-Path (Join-Path $ScriptDir '..\Cargo.toml')) {
                     <TextBlock Text="Pick an option below — most users only need Quick Client Install." FontSize="13" Foreground="#B5BAC1" TextWrapping="Wrap" Margin="0,0,0,18"/>
 
                     <!-- Featured Recommended Client Card -->
-                    <Border Background="#2B2D31" BorderBrush="#5865F2" BorderThickness="1.5" CornerRadius="12" Padding="20" Margin="0,0,0,14">
+                    <Border Background="#2B2D31" BorderBrush="#00BCC4" BorderThickness="1.5" CornerRadius="12" Padding="20" Margin="0,0,0,14">
                         <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
@@ -226,7 +231,7 @@ $RepoRoot = if (Test-Path (Join-Path $ScriptDir '..\Cargo.toml')) {
                             </Grid.ColumnDefinitions>
                             <StackPanel Grid.Column="0">
                                 <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
-                                    <Border Background="#5865F2" CornerRadius="6" Padding="8,3" Margin="0,0,10,0">
+                                    <Border Background="#009EA6" BorderBrush="#2DF58A" BorderThickness="1" CornerRadius="6" Padding="8,3" Margin="0,0,10,0">
                                         <TextBlock Text="RECOMMENDED" FontSize="10.5" FontWeight="Bold" Foreground="#FFFFFF"/>
                                     </Border>
                                     <TextBlock Text="Desktop App &amp; P2P Chat" FontSize="12" Foreground="#949BA4" VerticalAlignment="Center"/>
@@ -432,9 +437,9 @@ $RepoRoot = if (Test-Path (Join-Path $ScriptDir '..\Cargo.toml')) {
                                     <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
                                 <TextBlock x:Name="TxtProgressTitle" Grid.Column="0" Text="Ready to install" FontSize="16" FontWeight="Bold" Foreground="#F2F3F5"/>
-                                <TextBlock x:Name="TxtProgressPct" Grid.Column="1" Text="0%" FontSize="15" FontWeight="Bold" Foreground="#5865F2"/>
+                                <TextBlock x:Name="TxtProgressPct" Grid.Column="1" Text="0%" FontSize="15" FontWeight="Bold" Foreground="#2DF58A"/>
                             </Grid>
-                            <ProgressBar x:Name="InstallProgressBar" Height="10" Minimum="0" Maximum="100" Value="0" Background="#1E1F22" Foreground="#23A55A" BorderThickness="0"/>
+                            <ProgressBar x:Name="InstallProgressBar" Height="10" Minimum="0" Maximum="100" Value="0" Background="#1E1F22" Foreground="#1FF28A" BorderThickness="0"/>
                             <TextBlock x:Name="TxtInstallSummary" Text="Files are copied locally and shortcuts are configured automatically." FontSize="12.5" Foreground="#949BA4" TextWrapping="Wrap" Margin="0,12,0,0"/>
                         </StackPanel>
                     </Border>
@@ -462,7 +467,7 @@ $RepoRoot = if (Test-Path (Join-Path $ScriptDir '..\Cargo.toml')) {
                             </Grid.ColumnDefinitions>
                             <TextBlock x:Name="TxtFooterStatus" Grid.Column="0" Text="EazyConnect Setup ready." FontSize="12" FontWeight="Normal" Foreground="#949BA4" VerticalAlignment="Center"/>
                             <TextBlock Grid.Column="1" Text="Technical Log" FontSize="11.5" Foreground="#B5BAC1" VerticalAlignment="Center" Margin="0,0,12,0"/>
-                            <ProgressBar x:Name="MiniProgressBar" Grid.Column="2" Height="6" Minimum="0" Maximum="100" Value="0" Background="#1E1F22" Foreground="#5865F2" BorderThickness="0" VerticalAlignment="Center"/>
+                            <ProgressBar x:Name="MiniProgressBar" Grid.Column="2" Height="6" Minimum="0" Maximum="100" Value="0" Background="#1E1F22" Foreground="#00BCC4" BorderThickness="0" VerticalAlignment="Center"/>
                         </Grid>
                     </Expander.Header>
                     <TextBox x:Name="TxtLog" Height="120" Margin="0,10,0,0" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" FontFamily="Consolas" FontSize="11.5" Background="#1E1F22" Foreground="#DBDEE1" BorderBrush="#3F4147"/>
@@ -475,6 +480,31 @@ $RepoRoot = if (Test-Path (Join-Path $ScriptDir '..\Cargo.toml')) {
 
 $Reader = New-Object System.Xml.XmlNodeReader $XAML
 $Window = [Windows.Markup.XamlReader]::Load($Reader)
+
+# Load native ec Teal/Neon-Green branding icon & header logo if present
+$icoCand = @((Join-Path $ScriptDir 'eazyconnect.ico'), (Join-Path $RepoRoot 'installer\eazyconnect.ico')) | Where-Object { Test-Path $_ } | Select-Object -First 1
+if ($icoCand) {
+    try { $Window.Icon = [System.Windows.Media.Imaging.BitmapFrame]::Create([Uri]::new($icoCand)) } catch {}
+}
+$pngCand = @(
+    (Join-Path $ScriptDir 'logo.png'),
+    (Join-Path $RepoRoot 'crates\eazyconnect-ui\assets\logo.png'),
+    $icoCand
+) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+if ($pngCand) {
+    try {
+        $imgCtrl = $Window.FindName("ImgHeaderLogo")
+        $fbCtrl = $Window.FindName("HeaderLogoFallback")
+        $bmpImg = New-Object System.Windows.Media.Imaging.BitmapImage
+        $bmpImg.BeginInit()
+        $bmpImg.UriSource = [Uri]::new($pngCand)
+        $bmpImg.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
+        $bmpImg.EndInit()
+        $imgCtrl.Source = $bmpImg
+        $imgCtrl.Visibility = 'Visible'
+        $fbCtrl.Visibility = 'Collapsed'
+    } catch {}
+}
 
 # --- Bind Controls ----------------------------------------------------------
 $VpnBadgeText = $Window.FindName("VpnBadgeText")
