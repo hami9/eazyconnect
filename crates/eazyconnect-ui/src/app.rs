@@ -21,6 +21,7 @@ use egui::{
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex as TokioMutex;
 
+use crate::network::{NetworkPanel, NetworkTarget};
 use crate::state::{
     avatar_color_for, broadcast_discovery_target, compute_layout_metrics,
     discovery_target_for_server, format_bytes, format_time_now, normalize_server_url, paint_avatar,
@@ -29,8 +30,8 @@ use crate::state::{
 };
 use crate::theme::{apply_theme_to_ctx, palette, ThemeMode, ThemePalette};
 use crate::widgets::{
-    attach_circle_btn, danger_btn, file_attachment_card, primary_btn, rail_logo_btn,
-    rail_squircle_btn, secondary_btn, unread_badge,
+    attach_circle_btn, danger_btn, field, file_attachment_card, nav_btn, primary_btn,
+    secondary_btn, unread_badge,
 };
 
 pub struct EazyUiApp {
@@ -43,6 +44,8 @@ pub struct EazyUiApp {
     // Navigation & responsive overlays
     screen: AppScreen,
     settings_open: bool,
+    network_open: bool,
+    network: NetworkPanel,
     settings_section: SettingsSection,
     profile_popover_open: bool,
     narrow_show_peers: bool,
@@ -136,6 +139,8 @@ impl EazyUiApp {
                 AppScreen::Onboarding
             },
             settings_open: false,
+            network_open: false,
+            network: NetworkPanel::default(),
             settings_section: SettingsSection::Account,
             profile_popover_open: false,
             narrow_show_peers: true,
@@ -369,7 +374,15 @@ impl EazyUiApp {
                     &cfg,
                 )?;
 
-                let new_token = if existing_token.is_none() {
+                let needs_device_token = match existing_token.as_deref() {
+                    None => true,
+                    Some(token) if cfg.role.as_deref() == Some("device") => client
+                        .list_devices(token)
+                        .await
+                        .is_err_and(|error| error.starts_with("HTTP 401:")),
+                    Some(_) => false,
+                };
+                let new_token = if needs_device_token {
                     let tok = client.enroll_device(&id, invite.as_deref()).await?;
                     Some((tok.token, tok.role))
                 } else {
@@ -440,6 +453,8 @@ impl EazyUiApp {
             let _ = save_client_config(&self.loaded_cfg, self.config_path.as_deref());
             self.screen = AppScreen::Onboarding;
             self.settings_open = false;
+            self.network_open = false;
+            self.network = NetworkPanel::default();
         }
         let node_slot = Arc::clone(&self.active_node);
         let tx = self.events_tx.clone();
@@ -1054,195 +1069,179 @@ impl EazyUiApp {
             .show(ui, |ui| {
                 ScrollArea::vertical().show(ui, |ui| {
                     let avail_w = ui.available_width();
-                    let card_w = (avail_w - 32.0).clamp(280.0, 480.0);
                     let pad = if avail_w < 560.0 { 16 } else { 26 };
+                    let card_w = (avail_w - 32.0 - 2.0 * f32::from(pad)).clamp(245.0, 480.0);
 
                     ui.vertical_centered(|ui| {
-                        ui.add_space((ui.available_height() * 0.08).clamp(16.0, 48.0));
+                        ui.add_space(24.0);
                         Frame::new()
                             .fill(pal.sidebar_bg)
                             .stroke(Stroke::new(1.0, pal.border))
                             .corner_radius(CornerRadius::same(14))
                             .inner_margin(Margin::same(pad))
                             .show(ui, |ui| {
-                                ui.set_max_width(card_w);
-                                ui.vertical_centered(|ui| {
-                                    if let Some(ref logo_tex) = self.app_logo_texture {
-                                        ui.add(
-                                            egui::Image::new((
-                                                logo_tex.id(),
-                                                Vec2::splat(68.0),
-                                            ))
-                                            .corner_radius(CornerRadius::same(16)),
-                                        );
-                                    } else {
-                                        paint_avatar(
-                                            ui,
-                                            58.0,
-                                            "ec",
-                                            "EC",
-                                            None,
-                                            pal.sidebar_bg,
-                                            None,
-                                        );
-                                    }
-                                    ui.add_space(10.0);
-                                    ui.label(
-                                        RichText::new("Welcome to EazyConnect")
-                                            .size(22.0)
-                                            .strong()
-                                            .color(pal.text_primary),
-                                    );
-                                    ui.label(
-                                        RichText::new("Private encrypted chat & file sharing")
-                                            .size(13.5)
-                                            .color(pal.text_muted),
-                                    );
+                                ui.set_width(card_w);
+                                ui.with_layout(Layout::top_down(Align::Min), |ui| {
+                                    self.render_connect_form(ui, pal, &ctx);
                                 });
-
-                                ui.add_space(16.0);
-
-                                if !self.discovered_servers.is_empty() {
-                                    ui.label(
-                                        RichText::new("NEARBY SERVERS")
-                                            .size(11.0)
-                                            .strong()
-                                            .color(pal.text_muted),
-                                    );
-                                    ui.add_space(6.0);
-                                    let servers = self.discovered_servers.clone();
-                                    for srv in servers {
-                                        Frame::new()
-                                            .fill(pal.dock_bg)
-                                            .stroke(Stroke::new(1.0, pal.border))
-                                            .corner_radius(CornerRadius::same(8))
-                                            .inner_margin(Margin::symmetric(12, 8))
-                                            .show(ui, |ui| {
-                                                ui.horizontal_wrapped(|ui| {
-                                                    ui.colored_label(pal.online, "●");
-                                                    ui.label(
-                                                        RichText::new(&srv.url)
-                                                            .strong()
-                                                            .color(pal.text_primary),
-                                                    );
-                                                    if secondary_btn(ui, pal, "Select", 28.0)
-                                                        .clicked()
-                                                    {
-                                                        self.server_input = srv.url.clone();
-                                                        if let Some(pin) = srv.tls_cert_sha256_hex
-                                                        {
-                                                            self.tls_pin_hex = pin;
-                                                        }
-                                                    }
-                                                });
-                                            });
-                                        ui.add_space(4.0);
-                                    }
-                                    ui.add_space(10.0);
-                                }
-
-                                ui.label(
-                                    RichText::new("DISPLAY NAME")
-                                        .size(11.0)
-                                        .strong()
-                                        .color(pal.text_muted),
-                                );
-                                ui.add_space(4.0);
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut self.display_name)
-                                        .desired_width(f32::INFINITY)
-                                        .hint_text("Your name shown to peers"),
-                                );
-
-                                ui.add_space(10.0);
-                                ui.label(
-                                    RichText::new("SERVER ADDRESS")
-                                        .size(11.0)
-                                        .strong()
-                                        .color(pal.text_muted),
-                                );
-                                ui.add_space(4.0);
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut self.server_input)
-                                        .desired_width(f32::INFINITY)
-                                        .hint_text("127.0.0.1:8000 or 10.8.0.1:8000"),
-                                );
-
-                                ui.add_space(10.0);
-                                ui.label(
-                                    RichText::new("INVITE CODE (IF REQUIRED)")
-                                        .size(11.0)
-                                        .strong()
-                                        .color(pal.text_muted),
-                                );
-                                ui.add_space(4.0);
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut self.invite_code)
-                                        .desired_width(f32::INFINITY)
-                                        .hint_text("Optional invite code"),
-                                );
-
-                                if let Some((ref msg, is_err)) = self.toast_notice {
-                                    ui.add_space(10.0);
-                                    ui.label(
-                                        RichText::new(msg)
-                                            .size(12.5)
-                                            .color(if is_err { pal.danger } else { pal.online }),
-                                    );
-                                }
-
-                                ui.add_space(16.0);
-                                ui.horizontal_wrapped(|ui| {
-                                    let connecting = self.conn_state == ConnectionState::Connecting;
-                                    let btn_lbl = if connecting {
-                                        "Connecting..."
-                                    } else {
-                                        "Connect & Open Chat"
-                                    };
-                                    let primary_w = (card_w - 145.0).clamp(160.0, 290.0);
-                                    if ui
-                                        .add_enabled(
-                                            !connecting,
-                                            egui::Button::new(
-                                                RichText::new(btn_lbl)
-                                                    .size(14.0)
-                                                    .strong()
-                                                    .color(Color32::WHITE),
-                                            )
-                                            .fill(pal.accent)
-                                            .stroke(Stroke::new(
-                                                1.0,
-                                                Color32::from_rgba_unmultiplied(
-                                                    pal.accent_neon.r(),
-                                                    pal.accent_neon.g(),
-                                                    pal.accent_neon.b(),
-                                                    150,
-                                                ),
-                                            ))
-                                            .corner_radius(CornerRadius::same(8))
-                                            .min_size(Vec2::new(primary_w, 38.0)),
-                                        )
-                                        .clicked()
-                                    {
-                                        self.spawn_auto_connect(&ctx);
-                                    }
-                                    if secondary_btn(ui, pal, "Scan Nearby", 38.0).clicked() {
-                                        self.spawn_background_probe(&ctx);
-                                    }
-                                });
-
-                                ui.add_space(8.0);
-                                if ui.link("Theme & Advanced Settings").clicked() {
-                                    self.settings_section = SettingsSection::Connection;
-                                    self.settings_open = true;
-                                }
                             });
                     });
                 });
             });
     }
 
-    fn render_discord_workspace(
+    fn render_connect_form(&mut self, ui: &mut egui::Ui, pal: &ThemePalette, ctx: &egui::Context) {
+        ui.label(RichText::new("Connect to a master").size(26.0).strong());
+        ui.label(
+            RichText::new("Join a server to chat and share files with your peers.")
+                .color(pal.text_muted),
+        );
+
+        ui.add_space(16.0);
+
+        if !self.discovered_servers.is_empty() {
+            ui.label(
+                RichText::new("NEARBY SERVERS")
+                    .size(11.0)
+                    .strong()
+                    .color(pal.text_muted),
+            );
+            ui.add_space(6.0);
+            let servers = self.discovered_servers.clone();
+            for srv in servers {
+                Frame::new()
+                    .fill(pal.dock_bg)
+                    .stroke(Stroke::new(1.0, pal.border))
+                    .corner_radius(CornerRadius::same(8))
+                    .inner_margin(Margin::symmetric(12, 8))
+                    .show(ui, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.colored_label(pal.online, "●");
+                            ui.label(RichText::new(&srv.url).strong().color(pal.text_primary));
+                            if secondary_btn(ui, pal, "Select", 34.0).clicked() {
+                                self.server_input = srv.url.clone();
+                                self.tls_pin_hex = srv.tls_cert_sha256_hex.unwrap_or_default();
+                            }
+                        });
+                    });
+                ui.add_space(4.0);
+            }
+            ui.add_space(10.0);
+        }
+
+        let address = field(
+            ui,
+            "Server address",
+            &mut self.server_input,
+            "192.168.1.10:8000",
+            false,
+        );
+        ui.add_space(8.0);
+        field(
+            ui,
+            "Display name",
+            &mut self.display_name,
+            "Shown to your peers",
+            false,
+        );
+        ui.add_space(8.0);
+        let invite = field(
+            ui,
+            "Invite code (optional)",
+            &mut self.invite_code,
+            "",
+            true,
+        );
+
+        if let Some((ref msg, is_err)) = self.toast_notice {
+            ui.add_space(10.0);
+            ui.label(RichText::new(msg).size(12.5).color(if is_err {
+                pal.danger
+            } else {
+                pal.online
+            }));
+        }
+
+        ui.add_space(16.0);
+        ui.horizontal_wrapped(|ui| {
+            let connecting = self.conn_state == ConnectionState::Connecting;
+            let ready = !connecting && !self.server_input.trim().is_empty();
+            let enter = (address.lost_focus() || invite.lost_focus())
+                && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            let connect = ui
+                .add_enabled_ui(ready, |ui| {
+                    primary_btn(
+                        ui,
+                        pal,
+                        if connecting {
+                            "Connecting…"
+                        } else {
+                            "Connect"
+                        },
+                        122.0,
+                        40.0,
+                    )
+                })
+                .inner
+                .clicked();
+            if ready && (connect || enter) {
+                self.spawn_auto_connect(ctx);
+            }
+            if secondary_btn(ui, pal, "Scan nearby", 40.0).clicked() {
+                self.spawn_background_probe(ctx);
+            }
+        });
+
+        ui.add_space(8.0);
+        if ui.link("Connection settings").clicked() {
+            self.settings_section = SettingsSection::Connection;
+            self.settings_open = true;
+        }
+    }
+
+    fn render_navigation(&mut self, ui: &mut egui::Ui, pal: &ThemePalette) {
+        egui::Panel::top("workspace_nav")
+            .show_separator_line(false)
+            .frame(
+                Frame::new()
+                    .fill(pal.rail_bg)
+                    .stroke(Stroke::new(1.0, pal.border))
+                    .inner_margin(Margin::symmetric(14, 8)),
+            )
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    if let Some(logo) = &self.app_logo_texture {
+                        ui.add(egui::Image::new((logo.id(), Vec2::splat(30.0))).corner_radius(6));
+                    }
+                    ui.label(RichText::new("EazyConnect").size(16.0).strong());
+                    ui.add_space(6.0);
+                    let home = if self.screen == AppScreen::Onboarding {
+                        "Connect"
+                    } else {
+                        "Chat"
+                    };
+                    if nav_btn(ui, pal, home, !self.settings_open && !self.network_open).clicked() {
+                        self.settings_open = false;
+                        self.network_open = false;
+                    }
+                    if nav_btn(ui, pal, "Network", self.network_open).clicked() {
+                        self.settings_open = false;
+                        self.network_open = true;
+                        self.profile_popover_open = false;
+                    }
+                    if nav_btn(ui, pal, "Settings", self.settings_open).clicked() {
+                        if self.screen == AppScreen::Onboarding && self.network_open {
+                            self.settings_section = SettingsSection::Connection;
+                        }
+                        self.settings_open = true;
+                        self.network_open = false;
+                        self.profile_popover_open = false;
+                    }
+                });
+            });
+    }
+
+    fn render_chat_workspace(
         &mut self,
         ui: &mut egui::Ui,
         pal: &ThemePalette,
@@ -1250,82 +1249,10 @@ impl EazyUiApp {
     ) {
         let ctx = ui.ctx().clone();
 
-        // 1. Far-left Workspace Rail (always responsive width)
-        let rail_icon_sz = if metrics.is_compact { 38.0 } else { 46.0 };
-        egui::Panel::left("guild_rail")
-            .exact_size(metrics.rail_width)
-            .show_separator_line(false)
-            .frame(
-                Frame::new()
-                    .fill(pal.rail_bg)
-                    .inner_margin(Margin::symmetric(8, 12)),
-            )
-            .show(ui, |ui| {
-                ui.vertical_centered(|ui| {
-                    if rail_logo_btn(
-                        ui,
-                        pal,
-                        self.app_logo_texture.as_ref(),
-                        "Direct Messages",
-                        !self.settings_open,
-                        rail_icon_sz,
-                    )
-                    .clicked()
-                    {
-                        self.settings_open = false;
-                        if metrics.is_narrow {
-                            self.narrow_show_peers = !self.narrow_show_peers;
-                        }
-                    }
-
-                    ui.add_space(10.0);
-                    ui.separator();
-
-                    ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
-                        if rail_squircle_btn(
-                            ui,
-                            pal,
-                            "⚙",
-                            "User Settings",
-                            self.settings_open,
-                            rail_icon_sz - 6.0,
-                        )
-                        .clicked()
-                        {
-                            self.settings_open = true;
-                        }
-
-                        ui.add_space(8.0);
-                        let theme_icon = match self.theme_mode {
-                            ThemeMode::Light => "☀",
-                            ThemeMode::Midnight => "☾",
-                            ThemeMode::DiscordDark => "◐",
-                        };
-                        if rail_squircle_btn(
-                            ui,
-                            pal,
-                            theme_icon,
-                            "Cycle Theme",
-                            false,
-                            rail_icon_sz - 8.0,
-                        )
-                        .clicked()
-                        {
-                            self.theme_mode = match self.theme_mode {
-                                ThemeMode::DiscordDark => ThemeMode::Midnight,
-                                ThemeMode::Midnight => ThemeMode::Light,
-                                ThemeMode::Light => ThemeMode::DiscordDark,
-                            };
-                            apply_theme_to_ctx(&ctx, self.theme_mode, self.font_size);
-                            let _ = self.save_settings_to_disk();
-                        }
-                    });
-                });
-            });
-
-        // 2. Narrow mode: either show DM List fullscreen OR Chat Canvas fullscreen cleanly
-        let show_sidebar = !metrics.is_narrow || self.narrow_show_peers || self.selected_peer.is_none();
-        let show_chat = !metrics.is_narrow || (!self.narrow_show_peers && self.selected_peer.is_some());
+        let show_sidebar =
+            !metrics.is_narrow || self.narrow_show_peers || self.selected_peer.is_none();
+        let show_chat =
+            !metrics.is_narrow || (!self.narrow_show_peers && self.selected_peer.is_some());
 
         if show_sidebar {
             let sidebar_w = if metrics.is_narrow {
@@ -1360,7 +1287,7 @@ impl EazyUiApp {
         }
 
         if self.profile_popover_open {
-            self.render_profile_popover(&ctx, pal, metrics);
+            self.render_profile_popover(&ctx, pal);
         }
     }
 
@@ -1383,10 +1310,10 @@ impl EazyUiApp {
                         ConnectionState::Reconnecting { .. } => (pal.idle, "Reconnecting..."),
                         ConnectionState::Disconnected => (pal.danger, "Offline"),
                     };
-                    ui.colored_label(dot_color, "●").on_hover_text(dot_tip);
+                    ui.colored_label(dot_color, "●");
                     ui.label(
-                        RichText::new("EazyConnect")
-                            .size(15.0)
+                        RichText::new(dot_tip)
+                            .size(13.0)
                             .strong()
                             .color(pal.text_primary),
                     );
@@ -1467,11 +1394,15 @@ impl EazyUiApp {
 
                 ui.add_space(6.0);
                 let peers = self.collect_sidebar_peers();
-                ScrollArea::vertical().show(ui, |ui| {
+                ScrollArea::vertical().id_salt("conversation_list").show(ui, |ui| {
                     if peers.is_empty() {
                         ui.add_space(14.0);
                         ui.label(
-                            RichText::new("No peers online yet.")
+                            RichText::new(if self.peer_search.trim().is_empty() {
+                                "No conversations yet."
+                            } else {
+                                "No conversations match your search."
+                            })
                                 .size(12.5)
                                 .color(pal.text_muted),
                         );
@@ -1966,23 +1897,13 @@ impl EazyUiApp {
         }
     }
 
-    fn render_profile_popover(
-        &mut self,
-        ctx: &egui::Context,
-        pal: &ThemePalette,
-        metrics: LayoutMetrics,
-    ) {
+    fn render_profile_popover(&mut self, ctx: &egui::Context, pal: &ThemePalette) {
         let me_name = self.my_display_name();
-        let x_off = if metrics.is_narrow {
-            16.0
-        } else {
-            metrics.rail_width + 12.0
-        };
         egui::Window::new("User Profile")
             .title_bar(false)
             .resizable(false)
             .collapsible(false)
-            .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(x_off, -68.0))
+            .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(16.0, -68.0))
             .frame(
                 Frame::new()
                     .fill(pal.dock_bg)
@@ -2568,15 +2489,32 @@ impl eframe::App for EazyUiApp {
         self.poll_events(&ctx);
         let pal = palette(self.theme_mode);
         let metrics = compute_layout_metrics(ctx.content_rect().width());
+        self.network.set_target(NetworkTarget {
+            url: normalize_server_url(&self.server_input, self.insecure_http),
+            ca: (!self.tls_ca_pem_path.trim().is_empty())
+                .then(|| PathBuf::from(self.tls_ca_pem_path.trim())),
+            allow_http: self.insecure_http,
+        });
+        self.render_navigation(ui, &pal);
 
         if self.settings_open {
             self.render_settings_view(ui, &pal, metrics);
             return;
         }
+        if self.network_open {
+            egui::CentralPanel::default()
+                .frame(
+                    Frame::new()
+                        .fill(pal.chat_bg)
+                        .inner_margin(Margin::symmetric(22, 16)),
+                )
+                .show(ui, |ui| self.network.show(ui, &pal, &self.rt));
+            return;
+        }
 
         match self.screen {
             AppScreen::Onboarding => self.render_onboarding(ui, &pal),
-            AppScreen::Chat => self.render_discord_workspace(ui, &pal, metrics),
+            AppScreen::Chat => self.render_chat_workspace(ui, &pal, metrics),
         }
     }
 }

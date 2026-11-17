@@ -12,12 +12,6 @@ pub fn primary_btn(
     min_width: f32,
     height: f32,
 ) -> Response {
-    let rim = Color32::from_rgba_unmultiplied(
-        pal.accent_neon.r(),
-        pal.accent_neon.g(),
-        pal.accent_neon.b(),
-        140,
-    );
     ui.add(
         egui::Button::new(
             RichText::new(label)
@@ -26,7 +20,6 @@ pub fn primary_btn(
                 .color(Color32::WHITE),
         )
         .fill(pal.accent)
-        .stroke(Stroke::new(1.0, rim))
         .corner_radius(CornerRadius::same(8))
         .min_size(Vec2::new(min_width, height)),
     )
@@ -62,82 +55,25 @@ pub fn danger_btn(ui: &mut Ui, pal: &ThemePalette, label: &str) -> Response {
     )
 }
 
-pub fn rail_squircle_btn(
-    ui: &mut Ui,
-    pal: &ThemePalette,
-    text: &str,
-    tooltip: &str,
-    active: bool,
-    size: f32,
-) -> Response {
-    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
-    let hovered = resp.hovered();
-    let radius = if active || hovered { 14 } else { (size * 0.5) as u8 };
-    let fill = if active {
-        pal.accent
-    } else if hovered {
-        pal.accent_hover
-    } else {
-        pal.dock_bg
-    };
-    let fg = if active || hovered {
-        Color32::WHITE
-    } else {
-        pal.text_primary
-    };
-    ui.painter()
-        .rect_filled(rect, CornerRadius::same(radius), fill);
-    if active {
-        ui.painter().rect_stroke(
-            rect,
-            CornerRadius::same(radius),
-            Stroke::new(1.5, pal.accent_neon),
-            egui::StrokeKind::Inside,
-        );
-    }
-    ui.painter().text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        text,
-        egui::FontId::proportional((size * 0.34).max(12.0)),
-        fg,
-    );
-    resp.on_hover_text(tooltip)
+pub fn nav_btn(ui: &mut Ui, pal: &ThemePalette, label: &str, selected: bool) -> Response {
+    ui.add(
+        egui::Button::new(RichText::new(label).strong().color(pal.text_primary))
+            .selected(selected)
+            .frame_when_inactive(selected)
+            .min_size(Vec2::new(0.0, 34.0)),
+    )
 }
 
-pub fn rail_logo_btn(
-    ui: &mut Ui,
-    pal: &ThemePalette,
-    logo: Option<&TextureHandle>,
-    tooltip: &str,
-    active: bool,
-    size: f32,
-) -> Response {
-    if let Some(tex) = logo {
-        let (rect, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
-        let hovered = resp.hovered();
-        let radius = if active || hovered { 13 } else { (size * 0.42) as u8 };
-        ui.painter().image(
-            tex.id(),
-            rect,
-            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-            Color32::WHITE,
-        );
-        if active || hovered {
-            ui.painter().rect_stroke(
-                rect,
-                CornerRadius::same(radius),
-                Stroke::new(
-                    if active { 2.0 } else { 1.5 },
-                    if active { pal.accent_neon } else { pal.accent_hover },
-                ),
-                egui::StrokeKind::Inside,
-            );
-        }
-        resp.on_hover_text(tooltip)
-    } else {
-        rail_squircle_btn(ui, pal, "ec", tooltip, active, size)
-    }
+pub fn field(ui: &mut Ui, label: &str, value: &mut String, hint: &str, password: bool) -> Response {
+    let label = ui.label(RichText::new(label).strong());
+    ui.add(
+        egui::TextEdit::singleline(value)
+            .desired_width(f32::INFINITY)
+            .margin(Margin::symmetric(10, 8))
+            .hint_text(hint)
+            .password(password),
+    )
+    .labelled_by(label.id)
 }
 
 pub fn attach_circle_btn(ui: &mut Ui, pal: &ThemePalette, tooltip: &str) -> Response {
@@ -206,8 +142,7 @@ pub fn file_attachment_card(
                 let sz = tex.size_vec2();
                 let scale = (260.0 / sz.x.max(1.0)).min(160.0 / sz.y.max(1.0)).min(1.0);
                 ui.add(
-                    egui::Image::new((tex.id(), sz * scale))
-                        .corner_radius(CornerRadius::same(8)),
+                    egui::Image::new((tex.id(), sz * scale)).corner_radius(CornerRadius::same(8)),
                 );
                 ui.add_space(8.0);
             }

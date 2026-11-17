@@ -66,8 +66,6 @@ pub struct TransferProgress {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LayoutMetrics {
     pub is_narrow: bool,
-    pub is_compact: bool,
-    pub rail_width: f32,
     pub sidebar_width: f32,
 }
 
@@ -75,22 +73,16 @@ pub fn compute_layout_metrics(viewport_width: f32) -> LayoutMetrics {
     if viewport_width < 660.0 {
         LayoutMetrics {
             is_narrow: true,
-            is_compact: true,
-            rail_width: 54.0,
-            sidebar_width: (viewport_width - 54.0).max(200.0),
+            sidebar_width: viewport_width,
         }
     } else if viewport_width < 880.0 {
         LayoutMetrics {
             is_narrow: false,
-            is_compact: true,
-            rail_width: 58.0,
             sidebar_width: (viewport_width * 0.27).clamp(190.0, 224.0),
         }
     } else {
         LayoutMetrics {
             is_narrow: false,
-            is_compact: false,
-            rail_width: 68.0,
             sidebar_width: (viewport_width * 0.24).clamp(230.0, 272.0),
         }
     }
@@ -360,15 +352,11 @@ mod tests {
     fn test_responsive_layout_metrics_adapt_to_width() {
         let narrow = compute_layout_metrics(520.0);
         assert!(narrow.is_narrow);
-        assert!(narrow.is_compact);
 
         let compact = compute_layout_metrics(760.0);
         assert!(!compact.is_narrow);
-        assert!(compact.is_compact);
 
         let desktop = compute_layout_metrics(1200.0);
         assert!(!desktop.is_narrow);
-        assert!(!desktop.is_compact);
-        assert_eq!(desktop.rail_width, 68.0);
     }
 }

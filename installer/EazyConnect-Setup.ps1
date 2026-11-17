@@ -266,8 +266,8 @@ $RepoRoot = if (Test-Path (Join-Path $ScriptDir '..\Cargo.toml')) {
                                     <TextBlock Text="Run the encrypted blind relay &amp; automatic LAN/VPN discovery host so friends or team devices can pair." FontSize="12" Foreground="#B5BAC1" TextWrapping="Wrap" Margin="0,5,0,0"/>
                                 </StackPanel>
                                 <WrapPanel Grid.Row="1" Orientation="Horizontal">
-                                    <Button x:Name="BtnChooseServer" Content="Server Only" Style="{StaticResource GhostBtn}" Margin="0,0,8,6"/>
-                                    <Button x:Name="BtnChooseFull" Content="Server + Client App" Style="{StaticResource GhostBtn}" Margin="0,0,0,6"/>
+                                    <Button x:Name="BtnChooseServer" Content="Server + Console" Style="{StaticResource GhostBtn}" Margin="0,0,8,6"/>
+                                    <Button x:Name="BtnChooseFull" Content="Full Bundle" Style="{StaticResource GhostBtn}" Margin="0,0,0,6"/>
                                 </WrapPanel>
                             </Grid>
                         </Border>
@@ -351,7 +351,6 @@ $RepoRoot = if (Test-Path (Join-Path $ScriptDir '..\Cargo.toml')) {
                                 <Button x:Name="BtnSetupDiscover" Grid.Column="2" Content="Discover Nearby" Style="{StaticResource PrimaryBtn}"/>
                             </Grid>
                             <TextBlock Text="Optional: click Discover Nearby to find a running Master Server on your LAN/VPN automatically. You can also connect anytime inside the app." FontSize="11.5" Foreground="#949BA4" TextWrapping="Wrap" Margin="0,0,0,10"/>
-                            <CheckBox x:Name="ChkDesktopShortcut" Content="Create Desktop &amp; Start Menu shortcuts" IsChecked="True"/>
                         </StackPanel>
                     </Border>
 
@@ -407,6 +406,7 @@ $RepoRoot = if (Test-Path (Join-Path $ScriptDir '..\Cargo.toml')) {
                                 <TextBox x:Name="TxtTlsPin" Margin="0,0,0,10"/>
 
                                 <CheckBox x:Name="ChkLanOnly" Content="Restrict Master Server binding to primary LAN IP (--lan-only)" Margin="0,0,0,8"/>
+                                <CheckBox x:Name="ChkDesktopShortcut" Content="Create Desktop &amp; Start Menu shortcuts" IsChecked="True" Margin="0,0,0,8"/>
                                 <CheckBox x:Name="ChkStartupTask" Content="Auto-start EazyConnect on Windows logon (schtasks)" Margin="0,0,0,12"/>
 
                                 <Border Background="#1E1F22" BorderBrush="#3F4147" BorderThickness="1" CornerRadius="8" Padding="12">
@@ -635,7 +635,7 @@ function Update-RoleVisibility {
         }
         'server' {
             $TxtSelectedRoleHeading.Text = "Master Server Host Setup"
-            $TxtSelectedRoleSub.Text = "Configures the encrypted relay & automatic UDP discovery host."
+            $TxtSelectedRoleSub.Text = "Installs the encrypted relay, discovery host, and desktop network console."
             $ClientConfigGroup.Visibility = 'Collapsed'
             $ServerConfigGroup.Visibility = 'Visible'
         }
@@ -1089,7 +1089,7 @@ function Start-EazyConnectInstall {
 
             $srcDirs = @((Join-Path $P.RepoDir 'target\release'), $P.RepoDir, $P.ScriptDir)
             $neededBins = switch ($P.RoleMode) {
-                'server' { @('eazyconnect-server.exe') }
+                'server' { @('eazyconnect-server.exe', 'eazyconnect-ui.exe') }
                 'client' { @('eazyconnect-ui.exe', 'eazyconnect-client.exe') }
                 default  { @('eazyconnect-server.exe', 'eazyconnect-ui.exe', 'eazyconnect-client.exe') }
             }
@@ -1148,7 +1148,7 @@ function Start-EazyConnectInstall {
                 }
             }
 
-            if ($P.MkShortcuts -and ($P.RoleMode -ne 'server')) {
+            if ($P.MkShortcuts) {
                 & $prog 88 "Creating Desktop and Start Menu shortcuts..."
                 $uiExe = Join-Path $P.InstallDir 'eazyconnect-ui.exe'
                 $ico = Join-Path $P.InstallDir 'eazyconnect.ico'

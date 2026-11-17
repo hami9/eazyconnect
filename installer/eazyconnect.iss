@@ -19,11 +19,11 @@ UninstallDisplayIcon={app}\eazyconnect-ui.exe
 
 [Types]
 Name: "client"; Description: "Client Workstation (Native UI + CLI)"
-Name: "server"; Description: "Master Server (HTTPS Relay + Discovery)"
+Name: "server"; Description: "Master Server (Relay + Network Console)"
 Name: "full"; Description: "Full Bundle (Master Server + Native UI + CLI)"
 
 [Components]
-Name: "ui"; Description: "Native Desktop UI (eazyconnect-ui.exe)"; Types: client full
+Name: "ui"; Description: "Native Desktop UI (eazyconnect-ui.exe)"; Types: client server full
 Name: "cli"; Description: "CLI Client & Hardware Bridge (eazyconnect-client.exe)"; Types: client full
 Name: "server"; Description: "Master Server & Blind Relay (eazyconnect-server.exe)"; Types: server full
 Name: "wizard"; Description: "Prerequisite & VPN Setup UI (EazyConnect-Setup.ps1)"; Types: client server full

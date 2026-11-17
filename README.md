@@ -101,6 +101,12 @@ eazyconnect-client profile set --name "Operator" --lang fa
 eazyconnect-client diag --upload
 ```
 
+### 7. Master network console
+
+Run `cargo run -p eazyconnect-ui` or open EazyConnect Control Center. Enter the master address, open **Network**, and sign in with a master administrator account. For a self-signed certificate, enter the TLS SHA-256 pin printed by the master in the sign-in form.
+
+The console refreshes every five seconds while open. It shows relay peers, device enrollment and access status, master uptime, and recent relay activity. **Block** disconnects an enrolled device and revokes its device token. After an administrator selects **Unblock**, the device can reconnect with its original identity. The desktop client renews its device token on reconnect if needed. CLI clients can run `eazyconnect-client enroll` to renew theirs.
+
 ## Public Repository Hygiene
 
 Runtime secrets and state (`users.json`, `devices.json`, `tokens.json`, `config.json`, `sync-manifest.json`, `bootstrap-admin.txt`, `*.key`, `*.pem`, `*.sealed`, `*.keystore`, `*keystore*.json`, `*.eazyconnect-id.json`, `keystore/`, `data/`, `target/`) are excluded by `.gitignore`. Never commit generated runtime directories or keys to a public repository.

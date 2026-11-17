@@ -218,6 +218,25 @@ pub struct RelayTelemetrySnapshot {
 // --- REST API DTOs ---------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetworkSnapshot {
+    pub uptime_seconds: u64,
+    pub devices: Vec<NetworkDevice>,
+    pub relay: RelayTelemetrySnapshot,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetworkDevice {
+    pub client_id: String,
+    pub online: bool,
+    pub blocked: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceAccessRequest {
+    pub blocked: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthChallengeResponse {
     pub challenge_id: String,
     pub nonce_hex: String,

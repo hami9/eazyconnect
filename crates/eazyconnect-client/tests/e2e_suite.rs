@@ -183,6 +183,144 @@ async fn test_tls_pinning_lan_discovery_and_enrollment_gate() {
 }
 
 #[tokio::test]
+async fn test_master_network_administration() {
+    const ADMIN_PASSWORD: &str = "AdminPass#2026";
+    let dir = TempTestDir::new("ezc_e2e_network");
+    let device =
+        DeviceIdentity::load_or_create("admin", Some(&dir.0.join("network_ks")), None).unwrap();
+    let data_dir = dir.0.join("server_data");
+    fs::create_dir_all(&data_dir).unwrap();
+    let legacy_devices = serde_json::json!({
+        "admin": {
+            "client_id": "admin",
+            "ed25519_pub": device.ed25519_pub(),
+            "enrolled_unix": 0
+        }
+    });
+    fs::write(data_dir.join("devices.json"), legacy_devices.to_string()).unwrap();
+
+    let boot = || {
+        boot_test_master(
+            &dir,
+            false,
+            EnrollmentPolicy::InviteCode("test-invite".to_string()),
+            Some(ADMIN_PASSWORD.to_string()),
+        )
+    };
+    let (srv, url, tls_cfg, _pin) = boot().await;
+    let http = MasterHttpClient::new(&url, tls_cfg.clone(), false).unwrap();
+    let token = http
+        .login_password("admin", ADMIN_PASSWORD)
+        .await
+        .unwrap()
+        .token;
+    let device_token = http.enroll_device(&device, None).await.unwrap().token;
+
+    let snapshot = http.network_snapshot(&token).await.unwrap();
+    assert_eq!(snapshot.devices.len(), 1);
+    assert_eq!(snapshot.devices[0].client_id, "admin");
+    assert!(!snapshot.devices[0].blocked);
+    assert!(!snapshot.devices[0].online);
+    assert!(http.network_snapshot("").await.unwrap_err().contains("401"));
+    assert!(http
+        .network_snapshot(&device_token)
+        .await
+        .unwrap_err()
+        .contains("403"));
+    assert!(http
+        .set_device_blocked(&device_token, "admin", true)
+        .await
+        .unwrap_err()
+        .contains("403"));
+    assert!(http
+        .set_device_blocked(&token, "unknown-device", true)
+        .await
+        .unwrap_err()
+        .contains("404"));
+
+    let connect_options = NodeConnectOptions {
+        ws_url: url,
+        tls_config: tls_cfg,
+        allow_insecure_ws: false,
+        allow_remote_serial_os_fallback: false,
+        allow_remote_hw_probe: false,
+        auto_reconnect: false,
+    };
+    let get_identity =
+        || DeviceIdentity::load_or_create("admin", Some(&dir.0.join("network_ks")), None).unwrap();
+    let node = EazyNode::connect(get_identity(), connect_options.clone())
+        .await
+        .unwrap();
+    let mut events = node.subscribe();
+    let snapshot = http.network_snapshot(&token).await.unwrap();
+    assert!(snapshot.devices[0].online);
+    assert_eq!(snapshot.relay.online_peers, ["admin"]);
+
+    http.set_device_blocked(&token, "admin", true)
+        .await
+        .unwrap();
+    wait_event(&mut events, |event| match event {
+        NodeEvent::Disconnected { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+    let snapshot = http.network_snapshot(&token).await.unwrap();
+    assert!(snapshot.devices[0].blocked);
+    assert!(!snapshot.devices[0].online);
+    assert!(snapshot.relay.online_peers.is_empty());
+    assert!(http
+        .list_devices(&device_token)
+        .await
+        .unwrap_err()
+        .contains("401"));
+    assert!(http
+        .enroll_device(&device, None)
+        .await
+        .unwrap_err()
+        .contains("device_blocked"));
+    let reconnect = EazyNode::connect(get_identity(), connect_options.clone()).await;
+    assert!(matches!(reconnect, Err(err) if err.contains("device_blocked")));
+
+    srv.abort();
+    let (srv, url, tls_cfg, _pin) = boot().await;
+    let http = MasterHttpClient::new(&url, tls_cfg.clone(), false).unwrap();
+    let snapshot = http.network_snapshot(&token).await.unwrap();
+    assert!(snapshot.devices[0].blocked);
+    assert!(http
+        .list_devices(&device_token)
+        .await
+        .unwrap_err()
+        .contains("401"));
+
+    http.set_device_blocked(&token, "admin", false)
+        .await
+        .unwrap();
+    assert!(http
+        .list_devices(&device_token)
+        .await
+        .unwrap_err()
+        .contains("401"));
+    let wrong_key = DeviceIdentity::ephemeral_csprng("admin").unwrap();
+    assert!(http
+        .enroll_device(&wrong_key, None)
+        .await
+        .unwrap_err()
+        .contains("identity_mismatch"));
+    let new_token = http.enroll_device(&device, None).await.unwrap().token;
+    assert_eq!(http.list_devices(&new_token).await.unwrap().len(), 1);
+    let options = NodeConnectOptions {
+        ws_url: url,
+        tls_config: tls_cfg,
+        ..connect_options
+    };
+    let _node = EazyNode::connect(get_identity(), options).await.unwrap();
+    let snapshot = http.network_snapshot(&token).await.unwrap();
+    assert!(!snapshot.devices[0].blocked);
+    assert!(snapshot.devices[0].online);
+    srv.abort();
+}
+
+#[tokio::test]
 async fn test_file_upload_incremental_sync_and_e2e_vault() {
     let dir = TempTestDir::new("ezc_e2e_sync");
     let (srv, url, tls_cfg, _pin) =
@@ -414,6 +552,13 @@ async fn test_e2e_cubehash_chat_zero_oracle_and_epoch_hop_over_wss() {
     assert!(!snap_json.contains(secret_text));
     assert!(!snap_json.contains(after_hop));
     assert!(snap.total_routed_frames >= 4);
+
+    let network = http.network_snapshot(&admin_tok.token).await.unwrap();
+    assert_eq!(network.relay.online_peers, ["alice", "bob"]);
+    assert!(network.relay.total_routed_frames >= snap.total_routed_frames);
+    let network_json = serde_json::to_string(&network).unwrap();
+    assert!(!network_json.contains(secret_text));
+    assert!(!network_json.contains(after_hop));
 
     alice.shutdown().await;
     bob.shutdown().await;

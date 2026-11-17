@@ -9,12 +9,12 @@ use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path as AxumPath, Query, State, WebSocketUpgrade};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use eazyconnect_core::{
     configure_tcp_keepalive, spawn_discovery_responder, AuthTokenResponse, BuiltServerTls,
-    CreateUserRequest, DeviceAuthRequest, HealthResponse, ListFilesResponse, PasswordLoginRequest,
-    ServerFileEntry, ServerTlsConfig,
+    CreateUserRequest, DeviceAccessRequest, DeviceAuthRequest, HealthResponse, ListFilesResponse,
+    NetworkSnapshot, PasswordLoginRequest, ServerFileEntry, ServerTlsConfig,
 };
 use eazyconnect_hw::{validate_id, DeviceIdentity};
 use hyper::body::Incoming;
@@ -219,6 +219,11 @@ pub fn build_router(state: ServerState) -> Router<()> {
         .route("/api/v1/files/{*path}", delete(handle_delete_file))
         .route("/api/v1/report", post(handle_upload_report))
         .route("/api/v1/relay/telemetry", get(handle_relay_telemetry))
+        .route("/api/v1/network", get(handle_network_snapshot))
+        .route(
+            "/api/v1/network/devices/{client_id}",
+            put(handle_device_access),
+        )
         .route("/ws", get(handle_ws_upgrade))
         .with_state(state)
 }
@@ -555,6 +560,40 @@ async fn handle_relay_telemetry(
     Json(state.relay.snapshot().await).into_response()
 }
 
+async fn handle_network_snapshot(State(state): State<ServerState>, headers: HeaderMap) -> Response {
+    if let Err(resp) = require_admin(&state, &headers).await {
+        return *resp;
+    }
+    let store = state.auth_store.read().await;
+    let relay = state.relay.snapshot().await;
+    let snapshot = NetworkSnapshot {
+        uptime_seconds: state.relay.uptime_seconds(),
+        devices: store.network_devices(&relay.online_peers),
+        relay,
+    };
+    ([(header::CACHE_CONTROL, "no-store")], Json(snapshot)).into_response()
+}
+
+async fn handle_device_access(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    AxumPath(client_id): AxumPath<String>,
+    Json(req): Json<DeviceAccessRequest>,
+) -> Response {
+    if let Err(resp) = require_admin(&state, &headers).await {
+        return *resp;
+    }
+    let client_id = match validate_id(&client_id) {
+        Ok(id) => id,
+        Err(err) => return api_error(400, err),
+    };
+
+    match state.relay.set_device_blocked(&client_id, req.blocked).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err((status, err)) => api_error(status, err),
+    }
+}
+
 async fn handle_ws_upgrade(ws: WebSocketUpgrade, State(state): State<ServerState>) -> Response {
     let relay = state.relay.clone();
     ws.on_upgrade(move |socket| async move {
@@ -573,6 +612,15 @@ async fn require_auth(
     store
         .authenticate_bearer(&token)
         .ok_or_else(|| Box::new(api_error(401, "invalid or expired token")))
+}
+
+async fn require_admin(state: &ServerState, headers: &HeaderMap) -> Result<(), Box<Response>> {
+    let principal = require_auth(state, headers).await?;
+    if principal.is_admin {
+        Ok(())
+    } else {
+        Err(Box::new(api_error(403, "admin privileges required")))
+    }
 }
 
 fn extract_bearer(headers: &HeaderMap) -> Option<String> {

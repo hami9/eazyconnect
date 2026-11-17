@@ -8,7 +8,7 @@ use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, Salt
 use argon2::Argon2;
 use eazyconnect_core::{
     http_auth_sign_bytes, AuthChallengeResponse, AuthTokenResponse, DeviceAuthRequest,
-    DeviceRecordView,
+    DeviceRecordView, NetworkDevice,
 };
 use eazyconnect_hw::{validate_id, DeviceIdentity};
 use serde::{Deserialize, Serialize};
@@ -36,6 +36,10 @@ pub struct PinnedDeviceRecord {
     pub client_id: String,
     pub ed25519_pub: [u8; 32],
     pub enrolled_unix: u64,
+    #[serde(default)]
+    blocked: bool,
+    #[serde(default)]
+    session_generation: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,6 +49,8 @@ pub struct StoredToken {
     pub role: String,
     pub is_admin: bool,
     pub expires_unix: u64,
+    #[serde(default)]
+    session_generation: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -168,6 +174,53 @@ impl AuthStore {
         out
     }
 
+    pub(crate) fn network_devices(&self, sorted_online_peers: &[String]) -> Vec<NetworkDevice> {
+        let mut devices: Vec<NetworkDevice> = self
+            .devices
+            .values()
+            .map(|device| NetworkDevice {
+                client_id: device.client_id.clone(),
+                online: sorted_online_peers.binary_search(&device.client_id).is_ok(),
+                blocked: device.blocked,
+            })
+            .collect();
+        devices.sort_by(|a, b| a.client_id.cmp(&b.client_id));
+        devices
+    }
+
+    pub(crate) fn set_device_blocked(
+        &mut self,
+        client_id: &str,
+        blocked: bool,
+    ) -> Result<(), (u16, String)> {
+        let device = self
+            .devices
+            .get_mut(client_id)
+            .ok_or((404, "device not found".to_string()))?;
+        if device.blocked == blocked {
+            return Ok(());
+        }
+
+        let previous_generation = device.session_generation;
+        if blocked {
+            device.session_generation = previous_generation
+                .checked_add(1)
+                .ok_or((500, "device session generation exhausted".to_string()))?;
+        }
+        device.blocked = blocked;
+
+        if write_json_atomic(&self.data_dir.join("devices.json"), &self.devices).is_err() {
+            let device = self
+                .devices
+                .get_mut(client_id)
+                .expect("device still exists");
+            device.blocked = !blocked;
+            device.session_generation = previous_generation;
+            return Err((500, "failed to save device access".to_string()));
+        }
+        Ok(())
+    }
+
     pub fn issue_challenge(&mut self) -> Result<AuthChallengeResponse, String> {
         let now = now_unix();
         self.challenges.retain(|_, c| c.expires_unix > now);
@@ -238,6 +291,12 @@ impl AuthStore {
         invite_code: Option<&str>,
     ) -> Result<(), (u16, String)> {
         if let Some(existing) = self.devices.get(client_id) {
+            if existing.blocked {
+                return Err((
+                    403,
+                    "device_blocked: access disabled by an administrator".to_string(),
+                ));
+            }
             if existing.ed25519_pub != ed25519_pub {
                 return Err((
                     403,
@@ -268,6 +327,8 @@ impl AuthStore {
                 client_id: client_id.to_string(),
                 ed25519_pub,
                 enrolled_unix: now_unix(),
+                blocked: false,
+                session_generation: 0,
             },
         );
         let devices_path = self.data_dir.join("devices.json");
@@ -339,6 +400,13 @@ impl AuthStore {
         let now = now_unix();
         if let Some(entry) = self.tokens.get(&hash_hex) {
             if entry.expires_unix > now {
+                if entry.role == "device"
+                    && !self.devices.get(&entry.subject).is_some_and(|device| {
+                        !device.blocked && device.session_generation == entry.session_generation
+                    })
+                {
+                    return None;
+                }
                 return Some(AuthenticatedPrincipal {
                     subject: entry.subject.clone(),
                     role: entry.role.clone(),
@@ -362,6 +430,11 @@ impl AuthStore {
         let token = format!("ezc_{}", hex::encode(raw));
         let token_sha256_hex = sha256_hex(token.as_bytes());
         let expires_unix = now_unix() + TOKEN_TTL_SECS;
+        let session_generation = self
+            .devices
+            .get(subject)
+            .filter(|_| role == "device")
+            .map_or(0, |device| device.session_generation);
 
         let now = now_unix();
         self.tokens.retain(|_, v| v.expires_unix > now);
@@ -373,6 +446,7 @@ impl AuthStore {
                 role: role.to_string(),
                 is_admin,
                 expires_unix,
+                session_generation,
             },
         );
         write_json_atomic(&self.data_dir.join("tokens.json"), &self.tokens)?;

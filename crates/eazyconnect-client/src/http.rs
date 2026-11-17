@@ -3,9 +3,9 @@ use std::time::Duration;
 use bytes::Bytes;
 use eazyconnect_core::{
     connect_tcp_keepalive, http_auth_sign_bytes, parse_endpoint_url, AuthChallengeResponse,
-    AuthTokenResponse, ClientTlsConfig, CreateUserRequest, DeviceAuthRequest, DeviceRecordView,
-    HealthResponse, ListFilesResponse, ParsedEndpoint, PasswordLoginRequest,
-    RelayTelemetrySnapshot, ServerFileEntry,
+    AuthTokenResponse, ClientTlsConfig, CreateUserRequest, DeviceAccessRequest, DeviceAuthRequest,
+    DeviceRecordView, HealthResponse, ListFilesResponse, NetworkSnapshot, ParsedEndpoint,
+    PasswordLoginRequest, RelayTelemetrySnapshot, ServerFileEntry,
 };
 use eazyconnect_hw::DeviceIdentity;
 use http_body_util::{BodyExt, Full};
@@ -120,6 +120,34 @@ impl MasterHttpClient {
 
     pub async fn list_devices(&self, token: &str) -> Result<Vec<DeviceRecordView>, String> {
         self.get_json("/api/v1/devices", Some(token)).await
+    }
+
+    pub async fn network_snapshot(&self, token: &str) -> Result<NetworkSnapshot, String> {
+        self.get_json("/api/v1/network", Some(token)).await
+    }
+
+    pub async fn set_device_blocked(
+        &self,
+        token: &str,
+        client_id: &str,
+        blocked: bool,
+    ) -> Result<(), String> {
+        let path = format!(
+            "/api/v1/network/devices/{}",
+            url_encode_component(client_id)
+        );
+        let body =
+            serde_json::to_vec(&DeviceAccessRequest { blocked }).map_err(|e| e.to_string())?;
+        let (status, _, resp) = self
+            .send_raw(
+                Method::PUT,
+                &path,
+                Some(token),
+                Some("application/json"),
+                body,
+            )
+            .await?;
+        ensure_success(status, &resp)
     }
 
     pub async fn upload_bytes(
