@@ -4,6 +4,8 @@ All notable changes to **EazyConnect** are documented in this file.
 
 ## Unreleased — Native Desktop UI, Prerequisite Installer & VPN Support
 
+- Updated the vendored CubeHash engine to 1.0.2. The master negotiates the relay wire version over WebSocket and rejects cross-version pairing.
+
 ### Native Desktop UI (`eazyconnect-ui`), CubeHash Chat Files & Simplified Wizard (`installer/`)
 - Added direct CubeHash P2P E2E chunked file transfer in chat (`EazyAppMessage::FileChunk` + `FileTransferAssembler` with 128 KiB chunks, 25 MiB cap, and `BLAKE3` whole-file integrity verification in `eazyconnect-core`, `EazyNode::send_e2e_file_bytes` in `eazyconnect-client`, and `+` attach file button with transfer progress, inline image previews, and `Save` attachment cards in `eazyconnect-ui`).
 - Refined `eazyconnect-ui` button styling (`widgets.rs`: unified Blurple/Ghost/Danger buttons, squircle rail icons, unread pills) and added 3-tier responsive viewport adaptation (`LayoutMetrics`: wide desktop, compact sidebar, and narrow single-pane navigation with `<- Peers` back button & Settings strip).

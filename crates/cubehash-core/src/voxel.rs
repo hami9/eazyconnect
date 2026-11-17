@@ -3,10 +3,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::config::MeshConfig;
 use crate::error::{CubeHashError, Result};
-use crate::primitives::{
-    fill_random, hmac_sha256_parts, ones_ratio, random_usize_inclusive,
-    shannon_entropy_bits_per_byte, whitened_stream,
-};
+use crate::primitives::{fill_random, hmac_sha256_parts, random_usize_inclusive, whitened_stream};
 
 /// Result of Bitwise Majority Voting self-healing (`Section 4.3`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,7 +47,9 @@ mod serde_bytes_125 {
         s.serialize_bytes(val)
     }
 
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<[u8; 125], D::Error> {
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        d: D,
+    ) -> std::result::Result<[u8; 125], D::Error> {
         let bytes: Vec<u8> = serde::Deserialize::deserialize(d)?;
         bytes
             .try_into()
@@ -117,7 +116,8 @@ impl VoxelCube {
         seed_material: &[u8; 32],
     ) -> Result<Self> {
         let mut cube_uid = [0u8; 16];
-        let uid_digest = hmac_sha256_parts(seed_material, &[b"cube-uid", &generation.to_le_bytes()]);
+        let uid_digest =
+            hmac_sha256_parts(seed_material, &[b"cube-uid", &generation.to_le_bytes()]);
         cube_uid.copy_from_slice(&uid_digest[..16]);
 
         let mut core_pattern = vec![0u8; config.core_bytes];
@@ -147,13 +147,20 @@ impl VoxelCube {
     /// `core_pattern` or the masked shadow copies embedded inside `sub_matrix`.
     pub fn heal_bitwise(&mut self, seal_key: &[u8; 32]) -> Result<HealReport> {
         let core_len = self.core_pattern.len();
-        if self.sub_matrix.len() < core_len * 2 {
+        if self.sub_matrix.len() < core_len * 2 || core_len > 128 {
             return Err(CubeHashError::InvalidConfig(
                 "sub_matrix too small for TMR shadows",
             ));
         }
-        let (mask_a, mask_b, spare_key) =
-            derive_shadow_masks(seal_key, &self.cube_uid, self.generation, core_len);
+        let mut mask_a = [0u8; 128];
+        let mut mask_b = [0u8; 128];
+        let mut spare_key = derive_shadow_masks_stack(
+            seal_key,
+            &self.cube_uid,
+            self.generation,
+            &mut mask_a[..core_len],
+            &mut mask_b[..core_len],
+        );
 
         let mut repaired_core_bits = 0usize;
         let mut repaired_shadow_bits = 0usize;
@@ -171,6 +178,8 @@ impl VoxelCube {
             self.sub_matrix[i] = voted ^ mask_a[i];
             self.sub_matrix[core_len + i] = voted ^ mask_b[i];
         }
+        mask_a[..core_len].zeroize();
+        mask_b[..core_len].zeroize();
 
         // Verify hot-spare checksum when room exists after the two shadow copies (true for all valid configs).
         let spare_offset = core_len * 2;
@@ -190,6 +199,7 @@ impl VoxelCube {
                 unrecoverable_anomaly = true;
             }
         }
+        spare_key.zeroize();
 
         if unrecoverable_anomaly {
             return Err(CubeHashError::UnrecoverableCorruption);
@@ -204,18 +214,37 @@ impl VoxelCube {
 
     /// Fraction of `1` bits across the sub-matrix + weight layer (expected near `0.5`).
     pub fn bit_balance_ratio(&self) -> f64 {
-        let mut buf = Vec::with_capacity(self.sub_matrix.len() + self.weight_layer.len());
-        buf.extend_from_slice(&self.sub_matrix);
-        buf.extend_from_slice(&self.weight_layer);
-        ones_ratio(&buf)
+        let ones: u64 = self
+            .sub_matrix
+            .iter()
+            .chain(self.weight_layer.iter())
+            .map(|b| b.count_ones() as u64)
+            .sum();
+        let total_bytes = self.sub_matrix.len() + self.weight_layer.len();
+        if total_bytes == 0 {
+            return 0.0;
+        }
+        ones as f64 / (total_bytes as f64 * 8.0)
     }
 
     /// Empirical Shannon entropy of the outer visible cube layers in bits/byte.
     pub fn visible_entropy_bits_per_byte(&self) -> f64 {
-        let mut buf = Vec::with_capacity(self.sub_matrix.len() + self.weight_layer.len());
-        buf.extend_from_slice(&self.sub_matrix);
-        buf.extend_from_slice(&self.weight_layer);
-        shannon_entropy_bits_per_byte(&buf)
+        let mut counts = [0u64; 256];
+        for &b in self.sub_matrix.iter().chain(self.weight_layer.iter()) {
+            counts[b as usize] += 1;
+        }
+        let len = (self.sub_matrix.len() + self.weight_layer.len()) as f64;
+        if len == 0.0 {
+            return 0.0;
+        }
+        let mut entropy = 0.0;
+        for &c in &counts {
+            if c > 0 {
+                let p = c as f64 / len;
+                entropy -= p * p.log2();
+            }
+        }
+        entropy
     }
 }
 
@@ -229,14 +258,24 @@ pub(crate) fn encode_sub_matrix_with_shadows(
     core_pattern: &[u8],
 ) -> Vec<u8> {
     let core_len = core_pattern.len();
-    let (mask_a, mask_b, spare_key) =
-        derive_shadow_masks(seal_key, cube_uid, generation, core_len);
+    debug_assert!(core_len <= 128);
+    let mut mask_a = [0u8; 128];
+    let mut mask_b = [0u8; 128];
+    let mut spare_key = derive_shadow_masks_stack(
+        seal_key,
+        cube_uid,
+        generation,
+        &mut mask_a[..core_len],
+        &mut mask_b[..core_len],
+    );
     let mut sub = vec![0u8; config.sub_matrix_bytes];
 
     for i in 0..core_len {
         sub[i] = core_pattern[i] ^ mask_a[i];
         sub[core_len + i] = core_pattern[i] ^ mask_b[i];
     }
+    mask_a[..core_len].zeroize();
+    mask_b[..core_len].zeroize();
 
     let spare_offset = core_len * 2;
     let remaining = config.sub_matrix_bytes - spare_offset;
@@ -248,6 +287,7 @@ pub(crate) fn encode_sub_matrix_with_shadows(
             sub[spare_offset..spare_offset + 8].copy_from_slice(&tag);
         }
     }
+    spare_key.zeroize();
 
     sub
 }
@@ -263,22 +303,39 @@ pub(crate) fn generate_variable_weight(config: &MeshConfig) -> Result<Vec<u8>> {
     Ok(buf)
 }
 
-fn derive_shadow_masks(
+/// Generates variable-size whitened weight padding from an already sampled CSPRNG seed.
+pub(crate) fn generate_variable_weight_seeded(config: &MeshConfig, seed: &[u8; 32]) -> Vec<u8> {
+    if !config.variable_wire_padding || config.weight_max_bytes == 0 {
+        return Vec::new();
+    }
+    let min = config.weight_min_bytes;
+    let max = config.weight_max_bytes;
+    let len = if min >= max {
+        min
+    } else {
+        let span = (max - min) as u64 + 1;
+        let raw = u64::from_le_bytes(seed[..8].try_into().unwrap());
+        min + (raw % span) as usize
+    };
+    let mut buf = vec![0u8; len];
+    whitened_stream(seed, b"wire-weight-pad", &mut buf);
+    buf
+}
+
+fn derive_shadow_masks_stack(
     seal_key: &[u8; 32],
     cube_uid: &[u8; 16],
     generation: u64,
-    core_len: usize,
-) -> (Vec<u8>, Vec<u8>, [u8; 32]) {
+    mask_a: &mut [u8],
+    mask_b: &mut [u8],
+) -> [u8; 32] {
     let gen_bytes = generation.to_le_bytes();
-    let seed_a = hmac_sha256_parts(seal_key, &[b"tmr-shadow-a", cube_uid, &gen_bytes]);
-    let seed_b = hmac_sha256_parts(seal_key, &[b"tmr-shadow-b", cube_uid, &gen_bytes]);
-    let spare_key = hmac_sha256_parts(seal_key, &[b"tmr-hot-spare", cube_uid, &gen_bytes]);
-
-    let mut mask_a = vec![0u8; core_len];
-    let mut mask_b = vec![0u8; core_len];
-    whitened_stream(&seed_a, b"mask-a", &mut mask_a);
-    whitened_stream(&seed_b, b"mask-b", &mut mask_b);
-    (mask_a, mask_b, spare_key)
+    let mut master = hmac_sha256_parts(seal_key, &[b"tmr-masks-v2", cube_uid, &gen_bytes]);
+    whitened_stream(&master, b"mask-a", mask_a);
+    whitened_stream(&master, b"mask-b", mask_b);
+    let spare_key = hmac_sha256_parts(&master, &[b"tmr-hot-spare"]);
+    master.zeroize();
+    spare_key
 }
 
 fn compute_hot_spare_tag(spare_key: &[u8; 32], core_pattern: &[u8]) -> [u8; 8] {

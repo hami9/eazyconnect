@@ -17,7 +17,7 @@ EazyConnect is a high-speed, headless LAN synchronization, zero-knowledge peer m
 
 | Crate | Purpose |
 | --- | --- |
-| `crates/cubehash-core` | `#![forbid(unsafe_code)]` cellular 3-cube cryptography engine (`XChaCha20-Poly1305`, `X25519` DH ratchet, TMR bit-rot self-healing, zero-oracle DTE Honey deception) |
+| `crates/cubehash-core` | [CubeHash 1.0.2](https://github.com/hami9/cubehash/releases/tag/v1.0.2), the vendored cellular 3-cube cryptography engine |
 | `crates/eazyconnect-hw` | Windows DPAPI (`CryptProtectData` / `CryptUnprotectData`), TPM 2.0 CNG probe, Registry `MachineGuid` binding, Win32 adapter/VPN inspection, COM/Serial (`serialport`), USB (`nusb`), and Windows HID (`SetupAPI`/`HidD_*`) |
 | `crates/eazyconnect-core` | Wire protocol (`RelayFrame`, 256-byte bucket-padded `EazyAppMessage` including chunked `FileChunk` transfers & `FileTransferAssembler`), Ed25519-signed UDP `37020` LAN discovery beacons, TLS 1.3 CA / SHA-256 pinning, `EZV1` E2E file vault envelopes, and `BLAKE3` delta manifest |
 | `crates/eazyconnect-server` | Headless HTTPS + WSS Master Server, Argon2id user auth, Ed25519 TOFU device enrollment + invite gate, `BLAKE3` file storage host, zero-knowledge blind `/ws` relay, UDP discovery responder, and Windows startup task helper |
@@ -80,6 +80,8 @@ eazyconnect-client download report.pdf .\out\report.pdf --e2e
 With `--e2e`, files are encrypted client-side using hardware-bound HKDF + `XChaCha20-Poly1305` (`EZV1`) before upload; the server stores opaque ciphertext only.
 
 ### 5. CubeHash E2E Chat & Hardware Bridging
+
+CubeHash 1.0.2 changes the peer packet and ratchet format. Upgrade the master first, then update both peers before pairing them again for E2E chat, file transfer, or hardware bridging. The upgraded master can still relay between two older clients.
 
 ```powershell
 # Terminal E2E peer chat

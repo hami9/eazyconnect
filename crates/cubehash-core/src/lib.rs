@@ -6,6 +6,7 @@ pub mod config;
 pub mod custody;
 pub mod error;
 pub mod honey;
+pub mod hybrid;
 pub mod mesh;
 pub mod primitives;
 pub mod spiral;
@@ -21,10 +22,14 @@ pub use custody::{
 };
 pub use error::{CubeHashError, Result};
 pub use honey::{DteEngine, HoneyProfile};
+pub use hybrid::{HybridTriMix, HybridTriMixHasher};
 pub use mesh::{
     build_custody_bundle, CellularMesh, DeliveryAck, DuplexCubeSession, EphemeralCubeAlgorithm,
     MeshAuditStats, PayloadMode, ReceiveOutcome, UniqueWireCube, WirePacket,
 };
-pub use primitives::{ones_ratio, shannon_entropy_bits_per_byte, CombiningFn, TimeAlgorithm};
+pub use primitives::{
+    lag1_bit_autocorrelation, ones_ratio, pearson_chi_square_uniform,
+    shannon_entropy_bits_per_byte, CombiningFn, TimeAlgorithm,
+};
 pub use spiral::{Coord3D, SpiralSpace};
 pub use voxel::{HealReport, SubCube, VoxelCube};

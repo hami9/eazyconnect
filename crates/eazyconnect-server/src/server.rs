@@ -11,6 +11,7 @@ use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
+use eazyconnect_core::protocol::CUBEHASH_RELAY_PROTOCOL;
 use eazyconnect_core::{
     configure_tcp_keepalive, spawn_discovery_responder, AuthTokenResponse, BuiltServerTls,
     CreateUserRequest, DeviceAccessRequest, DeviceAuthRequest, HealthResponse, ListFilesResponse,
@@ -596,9 +597,10 @@ async fn handle_device_access(
 
 async fn handle_ws_upgrade(ws: WebSocketUpgrade, State(state): State<ServerState>) -> Response {
     let relay = state.relay.clone();
-    ws.on_upgrade(move |socket| async move {
-        handle_relay_socket(socket, relay).await;
-    })
+    ws.protocols([CUBEHASH_RELAY_PROTOCOL])
+        .on_upgrade(move |socket| async move {
+            handle_relay_socket(socket, relay).await;
+        })
 }
 
 async fn require_auth(

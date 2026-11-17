@@ -92,6 +92,79 @@ where
 }
 
 #[tokio::test]
+async fn test_relay_rejects_cross_version_pairing() {
+    use eazyconnect_core::{parse_endpoint_url, relay_auth_challenge_sign_bytes, RelayFrame};
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+
+    let dir = TempTestDir::new("ezc_e2e_relay_version");
+    let (srv, url, tls_cfg, _) =
+        boot_test_master(&dir, false, EnrollmentPolicy::OpenLan, None).await;
+    let legacy = DeviceIdentity::ephemeral_csprng("legacy").unwrap();
+    let legacy_url = format!("wss://{}/ws", srv.addr);
+    let endpoint = parse_endpoint_url(&legacy_url).unwrap();
+    let tcp = tokio::net::TcpStream::connect(srv.addr).await.unwrap();
+    let tls = tls_cfg
+        .build_connector()
+        .unwrap()
+        .connect(endpoint.server_name, tcp)
+        .await
+        .unwrap();
+    let (mut legacy_socket, response) =
+        tokio_tungstenite::client_async(&legacy_url, tls).await.unwrap();
+    assert!(!response.headers().contains_key("sec-websocket-protocol"));
+    let challenge = legacy_socket.next().await.unwrap().unwrap();
+    let RelayFrame::AuthChallenge { nonce } = serde_json::from_str(challenge.to_text().unwrap()).unwrap()
+    else {
+        panic!("legacy client did not receive an auth challenge");
+    };
+    let registration = RelayFrame::RegisterAuth {
+        client_id: legacy.client_id().to_string(),
+        ed25519_pub: legacy.ed25519_pub(),
+        signature: legacy.sign(&relay_auth_challenge_sign_bytes(&nonce, legacy.client_id())),
+    };
+    legacy_socket
+        .send(Message::Text(serde_json::to_string(&registration).unwrap().into()))
+        .await
+        .unwrap();
+    let registered = legacy_socket.next().await.unwrap().unwrap();
+    assert!(matches!(
+        serde_json::from_str::<RelayFrame>(registered.to_text().unwrap()).unwrap(),
+        RelayFrame::Registered { .. }
+    ));
+
+    let current = EazyNode::connect(
+        DeviceIdentity::ephemeral_csprng("current").unwrap(),
+        NodeConnectOptions {
+            ws_url: url,
+            tls_config: tls_cfg,
+            allow_insecure_ws: false,
+            allow_remote_serial_os_fallback: false,
+            allow_remote_hw_probe: false,
+            auto_reconnect: false,
+        },
+    )
+    .await
+    .unwrap();
+    let mut events = current.subscribe();
+    current.send_pair_offer("legacy", EazyMeshProfile::Compact, &[]).await.unwrap();
+    wait_event(&mut events, |event| match event {
+        NodeEvent::RelayError { code, peer, .. }
+            if code == "cubehash_version_mismatch" && peer.as_deref() == Some("legacy") =>
+        {
+            Some(())
+        }
+        _ => None,
+    })
+    .await;
+    assert_eq!(srv.state.relay.snapshot().await.total_routed_frames, 0);
+
+    current.shutdown().await;
+    legacy_socket.close(None).await.unwrap();
+    srv.abort();
+}
+
+#[tokio::test]
 async fn test_tls_pinning_lan_discovery_and_enrollment_gate() {
     let dir = TempTestDir::new("ezc_e2e_auth");
     let (srv, url, tls_cfg, _pin) = boot_test_master(

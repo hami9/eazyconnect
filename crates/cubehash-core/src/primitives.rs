@@ -33,7 +33,7 @@ pub enum CombiningFn {
 
 /// Fills `buf` from the operating system CSPRNG.
 pub fn fill_random(buf: &mut [u8]) -> Result<()> {
-    getrandom::getrandom(buf).map_err(|_| CubeHashError::RngFailure)
+    getrandom::fill(buf).map_err(|_| CubeHashError::RngFailure)
 }
 
 /// Returns a random value uniformly distributed in `min..=max` using rejection sampling.
@@ -60,7 +60,8 @@ pub fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
 
 /// Computes `HMAC-SHA256` over multiple ordered slices without allocating a combined buffer.
 pub fn hmac_sha256_parts(key: &[u8], parts: &[&[u8]]) -> [u8; 32] {
-    let mut mac = <HmacSha256 as Mac>::new_from_slice(key).expect("HMAC accepts any key length");
+    let mut mac =
+        <HmacSha256 as KeyInit>::new_from_slice(key).expect("HMAC accepts any key length");
     for part in parts {
         mac.update(part);
     }
@@ -110,34 +111,61 @@ pub fn fixed_budget_mix(
     rounds: usize,
 ) -> [u8; 32] {
     let iterations = rounds.max(1);
-    let mut state_blake = [0u8; 32];
-    let mut state_sha3 = [0u8; 32];
-    let mut state_hmac = [0u8; 32];
+    let key_len = (key.len() as u64).to_le_bytes();
+    let dom_len = (domain.len() as u64).to_le_bytes();
+    let data_len = (data.len() as u64).to_le_bytes();
 
-    for round in 0..iterations {
+    // Round 0 absorbs arbitrary-length inputs once per primitive with canonical length framing.
+    let mut b2 = Blake2b512::new();
+    b2.update(b"FB-B2");
+    b2.update(key_len);
+    b2.update(key);
+    b2.update(dom_len);
+    b2.update(domain);
+    b2.update(data_len);
+    b2.update(data);
+    let b2_init = b2.finalize();
+    let mut state_blake = [0u8; 32];
+    for i in 0..32 {
+        state_blake[i] = b2_init[i] ^ b2_init[32 + i];
+    }
+
+    let mut s3 = Sha3_256::new();
+    s3.update(b"FB-S3");
+    s3.update(key_len);
+    s3.update(key);
+    s3.update(dom_len);
+    s3.update(domain);
+    s3.update(data_len);
+    s3.update(data);
+    let mut state_sha3: [u8; 32] = s3.finalize().into();
+
+    let mut state_hmac = hmac_sha256_parts(key, &[b"FB-HM", &dom_len, domain, &data_len, data]);
+
+    // Subsequent rounds ratchet compact 32-byte states cleanly under constant iteration work.
+    for round in 1..iterations {
         let r_bytes = (round as u64).to_le_bytes();
 
-        // 1. BLAKE2b leg
-        let mut b2 = Blake2b512::new();
-        b2.update(key);
-        b2.update(domain);
-        b2.update(r_bytes);
-        b2.update(state_blake);
-        b2.update(data);
-        let b2_full = b2.finalize();
-        state_blake.copy_from_slice(&b2_full[..32]);
+        let mut b2r = Blake2b512::new();
+        b2r.update(b"FB-R-B2");
+        b2r.update(key_len);
+        b2r.update(key);
+        b2r.update(r_bytes);
+        b2r.update(state_blake);
+        let b2_full = b2r.finalize();
+        for i in 0..32 {
+            state_blake[i] = b2_full[i] ^ b2_full[32 + i];
+        }
 
-        // 2. SHA3-256 leg
-        let mut s3 = Sha3_256::new();
-        s3.update(key);
-        s3.update(domain);
-        s3.update(r_bytes);
-        s3.update(state_sha3);
-        s3.update(data);
-        state_sha3.copy_from_slice(&s3.finalize());
+        let mut s3r = Sha3_256::new();
+        s3r.update(b"FB-R-S3");
+        s3r.update(key_len);
+        s3r.update(key);
+        s3r.update(r_bytes);
+        s3r.update(state_sha3);
+        state_sha3.copy_from_slice(&s3r.finalize());
 
-        // 3. HMAC-SHA256 leg
-        state_hmac = hmac_sha256_parts(key, &[domain, &r_bytes, &state_hmac, data]);
+        state_hmac = hmac_sha256_parts(key, &[b"FB-R-HM", &r_bytes, &state_hmac]);
     }
 
     let mut hybrid = [0u8; 32];
@@ -168,13 +196,15 @@ pub fn combine_non_linear(
 ) -> [u8; 32] {
     let mut acc = [0u8; 32];
     for (idx, chunk) in inputs.iter().enumerate() {
-        let step_digest = fixed_budget_mix(
-            TimeAlgorithm::HybridTriMix,
-            algo_key,
-            &(idx as u64).to_le_bytes(),
-            chunk,
-            budget,
-        );
+        let mut b2 = Blake2b512::new();
+        b2.update(b"combine-step-v2");
+        b2.update(algo_key);
+        b2.update((idx as u64).to_le_bytes());
+        b2.update((chunk.len() as u64).to_le_bytes());
+        b2.update(chunk);
+        let full = b2.finalize();
+        let mut step_digest = [0u8; 32];
+        step_digest.copy_from_slice(&full[..32]);
         match combiner {
             CombiningFn::XorFoldMix => {
                 for i in 0..32 {
@@ -196,8 +226,14 @@ pub fn combine_non_linear(
             }
         }
     }
-    // Final fixed-budget whitening pass across the accumulator.
-    fixed_budget_mix(TimeAlgorithm::HybridTriMix, algo_key, b"combine-final", &acc, budget)
+    // Final fixed-budget HybridTriMix whitening pass across the accumulator.
+    fixed_budget_mix(
+        TimeAlgorithm::HybridTriMix,
+        algo_key,
+        b"combine-final",
+        &acc,
+        budget,
+    )
 }
 
 /// Encrypts arbitrary-length plaintext with `XChaCha20-Poly1305` and explicit AAD.
@@ -209,7 +245,13 @@ pub fn aead_seal(
 ) -> Result<Vec<u8>> {
     let cipher = XChaCha20Poly1305::new(key.into());
     cipher
-        .encrypt(XNonce::from_slice(nonce), Payload { msg: plaintext, aad })
+        .encrypt(
+            &XNonce::from(*nonce),
+            Payload {
+                msg: plaintext,
+                aad,
+            },
+        )
         .map_err(|_| CubeHashError::CryptoFailure("aead encryption failed"))
 }
 
@@ -222,7 +264,13 @@ pub fn aead_open(
 ) -> Result<Vec<u8>> {
     let cipher = XChaCha20Poly1305::new(key.into());
     cipher
-        .decrypt(XNonce::from_slice(nonce), Payload { msg: ciphertext, aad })
+        .decrypt(
+            &XNonce::from(*nonce),
+            Payload {
+                msg: ciphertext,
+                aad,
+            },
+        )
         .map_err(|_| CubeHashError::AuthenticationFailed)
 }
 
@@ -253,4 +301,46 @@ pub fn shannon_entropy_bits_per_byte(bytes: &[u8]) -> f64 {
         }
     }
     entropy
+}
+
+/// Computes Pearson's chi-squared statistic (`df = 255`) testing byte uniformity (`expected = n / 256`).
+pub fn pearson_chi_square_uniform(bytes: &[u8]) -> f64 {
+    if bytes.is_empty() {
+        return 0.0;
+    }
+    let mut counts = [0u64; 256];
+    for &b in bytes {
+        counts[b as usize] += 1;
+    }
+    let expected = bytes.len() as f64 / 256.0;
+    counts
+        .iter()
+        .map(|&obs| {
+            let diff = obs as f64 - expected;
+            (diff * diff) / expected
+        })
+        .sum()
+}
+
+/// Computes empirical lag-1 bit-level serial correlation (`-1.0..=1.0`, ideal uniform `0.0`).
+pub fn lag1_bit_autocorrelation(bytes: &[u8]) -> f64 {
+    let total_bits = bytes.len() * 8;
+    if total_bits < 2 {
+        return 0.0;
+    }
+    let mut same_count = 0usize;
+    let mut prev_bit = bytes[0] & 1;
+    for (idx, &byte) in bytes.iter().enumerate() {
+        let start = if idx == 0 { 1 } else { 0 };
+        for shift in start..8 {
+            let cur = (byte >> shift) & 1;
+            if cur == prev_bit {
+                same_count += 1;
+            }
+            prev_bit = cur;
+        }
+    }
+    let pairs = (total_bits - 1) as f64;
+    let diff_count = (total_bits - 1) - same_count;
+    (same_count as f64 - diff_count as f64) / pairs
 }

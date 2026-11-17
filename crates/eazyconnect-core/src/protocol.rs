@@ -12,6 +12,8 @@ use zeroize::Zeroize;
 pub const APP_BUCKET_BYTES: usize = 256;
 pub const FILE_CHUNK_BYTES: usize = 128 * 1024;
 pub const MAX_E2E_CHAT_FILE_BYTES: usize = 25 * 1024 * 1024;
+/// Relay subprotocol for the packet authentication and ratchet introduced by CubeHash 1.0.2.
+pub const CUBEHASH_RELAY_PROTOCOL: &str = "eazyconnect.cubehash.1.0.2";
 
 /// Custom serde module for binary chunks encoded cleanly as Base64 inside JSON payloads.
 pub mod b64_serde {

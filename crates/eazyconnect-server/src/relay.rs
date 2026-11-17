@@ -22,6 +22,7 @@ const WS_IDLE_TIMEOUT: Duration = Duration::from_secs(65);
 
 struct ActivePeer {
     conn_id: u64,
+    current_wire: bool,
     ed25519_pub: [u8; 32],
     tx: mpsc::UnboundedSender<Message>,
     shutdown_tx: Option<oneshot::Sender<()>>,
@@ -116,6 +117,17 @@ impl BlindRelayState {
             return;
         };
         let (peer, message) = match clients.get(&event.to) {
+            Some(target) if target.current_wire != sender.current_wire => {
+                let err = RelayFrame::RelayError {
+                    code: "cubehash_version_mismatch".to_string(),
+                    detail: format!("Both clients must use the same CubeHash wire version to connect to '{}'. Update both clients to CubeHash 1.0.2.", event.to),
+                    peer: Some(event.to),
+                };
+                if let Ok(text) = serde_json::to_string(&err) {
+                    let _ = sender.tx.send(Message::Text(text.into()));
+                }
+                return;
+            }
             Some(target) => (target, Some(raw_json)),
             None => {
                 let err = RelayFrame::RelayError {
@@ -168,6 +180,7 @@ async fn send_ws_error(tx: &mpsc::UnboundedSender<Message>, code: &str, detail: 
 
 pub async fn handle_relay_socket(socket: WebSocket, state: BlindRelayState) {
     let conn_id = state.conn_counter.fetch_add(1, Ordering::Relaxed) + 1;
+    let current_wire = socket.protocol().is_some();
     let (mut ws_tx, mut ws_rx) = socket.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
 
@@ -259,6 +272,7 @@ pub async fn handle_relay_socket(socket: WebSocket, state: BlindRelayState) {
                         clean_id.clone(),
                         ActivePeer {
                             conn_id,
+                            current_wire,
                             ed25519_pub,
                             tx: tx.clone(),
                             shutdown_tx: Some(shutdown_tx),

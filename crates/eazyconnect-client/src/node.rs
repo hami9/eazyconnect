@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use cubehash_core::{DuplexCubeSession, HoneyProfile, MeshAuditStats, ReceiveOutcome};
+use eazyconnect_core::protocol::CUBEHASH_RELAY_PROTOCOL;
 use eazyconnect_core::{
     connect_tcp_keepalive, decode_app_payload, encode_app_payload, epoch_hop_sign_bytes,
     pair_accept_sign_bytes, pair_offer_sign_bytes, parse_endpoint_url,
@@ -19,7 +20,11 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
 use tokio::task::JoinHandle;
-use tokio_tungstenite::tungstenite::Message as WsMessage;
+use tokio_tungstenite::tungstenite::{
+    client::IntoClientRequest, error::ProtocolError,
+    http::{header::SEC_WEBSOCKET_PROTOCOL, HeaderValue},
+    Error as WsError, Message as WsMessage,
+};
 use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::Zeroize;
 
@@ -225,13 +230,26 @@ async fn connect_and_register_ws(
         Box::pin(tcp)
     };
 
+    let mut request = ws_url
+        .as_str()
+        .into_client_request()
+        .map_err(|e| format!("Invalid WebSocket URL {ws_url}: {e}"))?;
+    request.headers_mut().insert(
+        SEC_WEBSOCKET_PROTOCOL,
+        HeaderValue::from_static(CUBEHASH_RELAY_PROTOCOL),
+    );
     let (mut ws_stream, _resp) = tokio::time::timeout(
         WS_CONNECT_TIMEOUT,
-        tokio_tungstenite::client_async(&ws_url, stream),
+        tokio_tungstenite::client_async(request, stream),
     )
     .await
     .map_err(|_| format!("WebSocket upgrade timed out on {ws_url}"))?
-    .map_err(|e| format!("WebSocket upgrade failed on {ws_url}: {e}"))?;
+    .map_err(|e| match e {
+        WsError::Protocol(ProtocolError::SecWebSocketSubProtocolError(_)) => {
+            "Update the master server to a build with CubeHash 1.0.2.".to_string()
+        }
+        _ => format!("WebSocket upgrade failed on {ws_url}: {e}"),
+    })?;
 
     let challenge_nonce = loop {
         match tokio::time::timeout(WS_CONNECT_TIMEOUT, ws_stream.next()).await {
@@ -1442,6 +1460,9 @@ async fn handle_incoming_frame(
         }
         RelayFrame::RelayError { code, detail, peer } => {
             if let Some(ref p) = peer {
+                if code == "cubehash_version_mismatch" {
+                    state.outbound_offers.retain(|_, offer| &offer.peer_id != p);
+                }
                 if let Some(sess) = state.sessions.get_mut(p) {
                     if sess.session.tx.has_pending_outbound() {
                         let _ = sess.session.rollback_outbound();
