@@ -1,6 +1,6 @@
 # EazyConnect (Rust + CubeHash Edition)
 
-EazyConnect is a high-speed, headless LAN synchronization, zero-knowledge peer messaging, and OS/hardware-bridged communication platform rewritten in Rust (`v0.2.0`) and powered by **CubeHash** cellular cryptography, **XChaCha20-Poly1305**, **Ed25519 + X25519**, **TLS 1.3**, and Windows **DPAPI / TPM 2.0 / MachineGuid** hardware custody.
+EazyConnect is a Rust platform for LAN file synchronization, encrypted peer messaging, and hardware bridging. It uses **CubeHash** cellular cryptography, **XChaCha20-Poly1305**, **Ed25519 + X25519**, **TLS 1.3**, and Windows **DPAPI / TPM 2.0 / MachineGuid** hardware custody.
 
 > Legacy Python prototype source (`v0.1.0`) remains preserved in the `v0.1.0` git tag.
 
@@ -11,7 +11,7 @@ EazyConnect is a high-speed, headless LAN synchronization, zero-knowledge peer m
 - [CLI Reference](docs/cli-reference.md) — Complete options and subcommands for `eazyconnect-server` and `eazyconnect-client`.
 - [Hardware & Peripheral Bridge](docs/hardware-bridge.md) — Windows DPAPI, TPM 2.0 CNG probe, `MachineGuid` lock, COM/Serial, USB, HID, and encrypted remote hardware bridging.
 - [VPN & Dual-Homed Networks](docs/vpn-guide.md) — Mesh VPN setup (WireGuard, Tailscale, ZeroTier), Exit VPN LAN discovery bypass, persistent TLS pinning, and WSS auto-reconnect.
-- [Changelog](CHANGELOG.md) — Release history (`v0.1.0` -> `v0.2.0` + VPN support).
+- [Changelog](CHANGELOG.md) — Release history and upgrade notes.
 
 ## Workspace Architecture
 

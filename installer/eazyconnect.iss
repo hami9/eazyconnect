@@ -1,7 +1,7 @@
 [Setup]
 AppId={{7E8E6E42-9A55-4B1C-8A0A-E42C12000210}
 AppName=EazyConnect
-AppVersion=0.2.1
+AppVersion=0.3.0
 AppPublisher=EazyConnect Contributors
 AppPublisherURL=https://github.com/hami9/eazyconnect
 DefaultDirName={localappdata}\Programs\EazyConnect
@@ -10,7 +10,7 @@ DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 OutputDir=..\installer_out
-OutputBaseFilename=EazyConnect-Setup-v0.2.1-windows-x86_64
+OutputBaseFilename=EazyConnect-Setup-v0.3.0-windows-x86_64
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern dark
